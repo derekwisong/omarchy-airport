@@ -1,15 +1,16 @@
 # Airport — an Omarchy shell plugin
 
-Flight conditions for the airports you watch, in your bar. Full-screen lookup for the other
-19,410.
+Look up any of 19,411 US airports — and the rest of the world besides — without leaving your
+desktop. One summoned panel: type an identifier, a city or a state, and get the field.
 
 ```
-… ● KPOU VFR  🔊 📶 🔋 14:32
-  └─ green dot = VFR, blue = MVFR, red = IFR, magenta = LIFR
-```
+POU  KPOU  VFR  elev 164'
+Hudson Valley Regional
+Poughkeepsie, NY · 4 mi S · Airport diagram
+Clear, 68°F, wind from the southeast (130°) at 3 kt.
 
-Click the pill for the detail popup. Right-click to cycle to the next watched airport.
-Middle-click to force a refresh. Hit the full-screen lookup for anything not on your list.
+Summary  Weather  Amenities  Runways  Procedures  Frequencies  Services  Notes
+```
 
 Built for someone who flies both seats: a private pilot who wants runway lengths, CTAF and
 density altitude, and a frequent flier who wants to know if ATL is IFR before leaving for the
@@ -102,18 +103,12 @@ departure frequencies under their own heading, and counts the rest.
 ## Activating it
 
 **This plugin configures nothing on your system.** Omarchy manifests cannot declare
-keybindings — the schema accepts only `schemaVersion`, `id`, `name`, `version`, `author`,
-`description`, `kinds`, `keepLoaded`, `entryPoints`, a `barWidget` block and an `omarchy`
-block (clone bookkeeping). Bindings live in Hyprland config, which is yours. `install.sh`
-copies, enables and builds the cache; it never writes to your config.
+keybindings, so bindings live in Hyprland config, which is yours. `install.sh` copies and
+enables; it never writes to your config and never builds anything behind your back.
 
-Three ways in, in the order Omarchy itself uses them:
+Three ways in:
 
-**1. The bar widget** — already there once enabled, no setup. Click the pill for the detail
-popup, right-click to cycle watched airports, middle-click to refresh. A plugin that ships a
-bar widget is its own entry point, which is why this one needs no keybinding to be useful.
-
-**2. The Omarchy menu** — `SUPER + SPACE`, then type "airport". Copy the entry from
+**1. The Omarchy menu** — `SUPER + SPACE`, then type "airport". Copy the entry from
 [`menu-extension.jsonc`](menu-extension.jsonc) into
 `~/.config/omarchy/extensions/omarchy-menu.jsonc` (hot-reloads on save). This is how the
 built-in overlays are reachable too — Emoji is `trigger.emoji` in the stock menu, with
@@ -123,7 +118,7 @@ built-in overlays are reachable too — Emoji is `trigger.emoji` in the stock me
 omarchy menu summon trigger.airports
 ```
 
-**3. A keybinding** — optional, and only worth it for something you open constantly. Nothing
+**2. A keybinding** — optional, and only worth it for something you open constantly. Nothing
 is suggested here by default: on a stock install the natural candidates are taken
 (`SUPER+CTRL+A` is Audio), and overriding a stock binding to install a third-party plugin is
 a bad trade. If you want one, check what is free first and pick from there:
@@ -137,7 +132,7 @@ omarchy menu keybindings --print | grep -E "^SUPER"
 o.bind("SUPER + <key>", "Airports", "omarchy-shell shell toggle derekwisong.airport")
 ```
 
-**4. Directly**, from a script or terminal:
+**3. Directly**, from a script or terminal:
 
 ```bash
 omarchy-shell shell toggle derekwisong.airport
@@ -363,9 +358,9 @@ journalctl --user --since "2 minutes ago" | grep -i qml   # QML errors land here
 ```
 
 Note: saving a file under `~/.config/omarchy/plugins/` logs `Local plugin changed, reloading`
-and `omarchy-shell shell rescanPlugins` returns success, but **neither re-instantiates an
-already-mounted bar widget** — the old component keeps running and your edit appears to do
-nothing. `omarchy restart shell` is the only thing that reliably reloads plugin QML.
+and `omarchy-shell shell rescanPlugins` returns success, but **neither re-instantiates a
+component the shell has already mounted** — the old one keeps running and your edit appears to
+do nothing. `omarchy restart shell` is the only thing that reliably reloads plugin QML.
 
 ### Adding a NASR column
 
