@@ -28,6 +28,24 @@ FAA cycle rolls over. To build it ahead of time instead:
 python3 ~/.config/omarchy/plugins/derekwisong.airport/scripts/apt.py cache update
 ```
 
+### Removing it
+
+```bash
+omarchy plugin remove derekwisong.airport
+```
+
+That takes the plugin out. Two things it deliberately leaves behind, because
+they are yours rather than the plugin's:
+
+```bash
+rm -rf ~/.cache/airport-info      # the FAA data cache and downloaded charts
+rm -rf ~/.airport-info            # your notes and recents
+```
+
+If you added the Omarchy menu entry by hand, remove it from
+`~/.config/omarchy/extensions/omarchy-menu.jsonc` too — the plugin never wrote
+it and cannot take it back out.
+
 ## The cache
 
 Every FAA and OurAirports source is a bulk publication — a whole 28-day subscription file, a
