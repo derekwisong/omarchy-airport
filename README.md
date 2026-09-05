@@ -393,6 +393,13 @@ the previous (or empty) argument list.
 omarchy plugin validate .     # manifest and entry points
 ```
 
+## License
+
+MIT — see [LICENSE](LICENSE). The code is mine to license; the data is not, and the sources
+below carry their own terms. FAA material is public domain. OpenStreetMap data is
+© OpenStreetMap contributors under the ODbL, and that attribution appears in the CLI output
+and on every generated page.
+
 ## Data sources
 
 FAA NASR 28-day subscription · FAA d-TPP · FAA Chart Supplement · aviationweather.gov ·
