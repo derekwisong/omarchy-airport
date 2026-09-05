@@ -67,8 +67,28 @@ VERSION = _version()
 # told who the author is. The name is distinctive enough to look up.
 UA = "omarchy-airport/%s" % VERSION
 
-CACHE_DIR = Path(os.environ.get("AIRPORT_INFO_CACHE") or (Path.home() / ".cache" / "airport-info"))
-NOTES_DIR = Path(os.environ.get("AIRPORT_INFO_NOTES") or (Path.home() / ".airport-info" / "notes"))
+def _xdg(var, fallback):
+    """An XDG base directory, honouring the environment before the default."""
+    root = os.environ.get(var)
+    return Path(root) if root else (Path.home() / fallback)
+
+
+# Three kinds of thing, three homes, following the spec Omarchy itself uses -
+# ~/.config/omarchy, ~/.local/state/omarchy, ~/.cache/omarchy, and no ~/.omarchy.
+#
+#   cache   derived, rebuildable, safe to delete: the FAA database and charts
+#   data    written by you and not reproducible: your notes
+#   state   machine-managed and disposable: recents and which are pinned
+#
+# Nothing goes in config, because there is nothing to configure. All of it used
+# to live in ~/.airport-info, which is the sort of dotfile in $HOME that the
+# spec exists to stop.
+CACHE_DIR = Path(os.environ.get("AIRPORT_INFO_CACHE")
+                 or _xdg("XDG_CACHE_HOME", ".cache") / "airport-info")
+DATA_DIR = _xdg("XDG_DATA_HOME", ".local/share") / "airport-info"
+STATE_DIR = _xdg("XDG_STATE_HOME", ".local/state") / "airport-info"
+LEGACY_DIR = Path.home() / ".airport-info"
+NOTES_DIR = Path(os.environ.get("AIRPORT_INFO_NOTES") or DATA_DIR / "notes")
 DB_PATH = CACHE_DIR / "airports.db"
 OSM_DIR = CACHE_DIR / "osm"
 
@@ -300,6 +320,44 @@ CREATE TABLE IF NOT EXISTS oa_rwy (
   he_lat TEXT, he_lon TEXT);
 CREATE INDEX IF NOT EXISTS oa_rwy_ix ON oa_rwy(ident);
 """
+
+
+def migrate_legacy_home():
+    """Move ~/.airport-info to where it should have been.
+
+    Cheap enough to call on every run: one stat when the directory is gone,
+    which it is for anyone who never had it. Never overwrites - if a
+    destination already exists the old copy is left alone rather than guessed
+    about."""
+    if not LEGACY_DIR.is_dir():
+        return
+    moved = []
+    for old_path, new_path in ((LEGACY_DIR / "notes", NOTES_DIR),
+                               (LEGACY_DIR / "recents.json", RECENTS_PATH)):
+        if not old_path.exists() or new_path.exists():
+            continue
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(old_path, new_path)
+        except OSError:
+            # os.replace cannot cross a filesystem boundary, and XDG_DATA_HOME
+            # is free to point at another one. Falling back rather than
+            # silently leaving the notes somewhere nothing will look for them.
+            try:
+                import shutil
+                shutil.move(str(old_path), str(new_path))
+            except Exception as exc:
+                log("could not move %s to %s: %s" % (old_path, new_path, exc))
+                continue
+        moved.append("%s -> %s" % (old_path, new_path))
+    if moved:
+        log("moved your airport data out of ~/.airport-info:")
+        for line in moved:
+            log("  " + line)
+    try:
+        LEGACY_DIR.rmdir()          # only succeeds once it is empty
+    except OSError:
+        pass
 
 
 def db_connect(readonly=True, path=None):
@@ -1515,7 +1573,7 @@ def get_attendance(conn, rec):
 
 
 RECENTS_PATH = Path(os.environ.get("AIRPORT_INFO_RECENTS")
-                    or (NOTES_DIR.parent / "recents.json"))
+                    or STATE_DIR / "recents.json")
 RECENTS_MAX = 12
 
 
@@ -4006,6 +4064,7 @@ def official_links(rec, diagram_url=""):
 # --------------------------------------------------------------------------
 
 def main(argv=None):
+    migrate_legacy_home()
     p = argparse.ArgumentParser(
         prog="apt.py", description="Airport data for pilots and travelers. NOT FOR NAVIGATION.")
     p.add_argument("--version", action="version", version=VERSION)

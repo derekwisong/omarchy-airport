@@ -38,8 +38,9 @@ That takes the plugin out. Two things it deliberately leaves behind, because
 they are yours rather than the plugin's:
 
 ```bash
-rm -rf ~/.cache/airport-info      # the FAA data cache and downloaded charts
-rm -rf ~/.airport-info            # your notes and recents
+rm -rf ~/.cache/airport-info          # the FAA data cache and downloaded charts
+rm -rf ~/.local/share/airport-info    # your notes
+rm -rf ~/.local/state/airport-info    # recents and favourites
 ```
 
 If you added the Omarchy menu entry by hand, remove it from
@@ -318,7 +319,7 @@ python3 $apt recents unpin KPOU
 python3 $apt recents clear      # drops everything except pins
 ```
 
-Stored in `~/.airport-info/recents.json`.
+Stored in `~/.local/state/airport-info/recents.json`.
 
 ## The engine
 
@@ -364,7 +365,8 @@ food/shops/lounges browser you can filter by concourse.
 assigned to the terminal or concourse polygon that contains them. At ATL that places all 193
 mapped POIs into Concourses A–F, T and the Domestic Terminal with none left over.
 
-**Your side**: plain markdown in `~/.airport-info/notes/<IDENT>.md`, one file per airport.
+**Your side**: plain markdown in `~/.local/share/airport-info/notes/<IDENT>.md`, one file per
+airport.
 
 ## What it deliberately does not do
 
@@ -466,8 +468,27 @@ and on every generated page.
 
 ## Data sources
 
-FAA NASR 28-day subscription · FAA d-TPP · FAA Chart Supplement · aviationweather.gov ·
-tfr.faa.gov · OurAirports · OpenStreetMap contributors (ODbL) · sunrise-sunset.org
+Everything here is public and unauthenticated. No account, no API key, no rate-limit tier.
 
-FAA data is public domain. OpenStreetMap data is © OpenStreetMap contributors under ODbL, and
-that attribution appears in the CLI output and on every generated page.
+| Source | What it provides | Terms |
+|---|---|---|
+| [FAA NASR 28-day subscription](https://nfdc.faa.gov/) | Airports, runways, runway ends, frequencies, class airspace, attendance, contacts, remarks | US Government work, public domain |
+| [FAA d-TPP](https://aeronav.faa.gov/) | Approach plates, SIDs, STARs, ODPs, minimums, hot spots, airport diagrams | Public domain |
+| [FAA Chart Supplement](https://aeronav.faa.gov/) | The per-airport supplement pages | Public domain |
+| [aviationweather.gov](https://aviationweather.gov/) | METAR and TAF, and the flight category on current conditions | NOAA/NWS, public domain |
+| [FAA NAS Status](https://nasstatus.faa.gov/) | Ground delay programs, ground stops, arrival and departure delays, field closures | Public domain |
+| [FAA TFR](https://tfr.faa.gov/) | Active temporary flight restrictions by state | Public domain |
+| [OurAirports](https://ourairports.com/) | Worldwide airports and runways, IATA codes, and the size ranking that puts ATL above a private strip when you search "atlanta" | Dedicated to the public domain |
+| [OpenStreetMap](https://www.openstreetmap.org/) contributors, via [Overpass](https://overpass-api.de/) | Terminal food, shops and lounges, and the concourse polygons they are assigned to | © OpenStreetMap contributors, **ODbL** |
+| [AirNav](https://www.airnav.com/) | FBO names and live fuel prices | © AirNav, LLC — fetched one airport at a time on demand, cached for a day, never bulk-crawled |
+| [sunrise-sunset.org](https://sunrise-sunset.org/) | Civil twilight, sunrise and sunset | Free public API |
+
+FAA and NOAA material is a work of the US Government and carries no copyright. **OpenStreetMap
+data is © OpenStreetMap contributors and licensed under the ODbL**, and that attribution
+appears in the CLI output and on every page this generates, not only here. AirNav's compilation
+is theirs; the plugin reads one airport's page when you ask for it and holds the answer for
+24 hours so it does not ask twice.
+
+The MIT license on this repository covers the code. It does not and cannot relicense any of
+the data above.
+

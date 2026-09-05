@@ -8,6 +8,11 @@ changes; `omarchy plugin update derekwisong.airport` is enough.
 
 ### Breaking
 
+- Your notes and recents move out of `~/.airport-info` to the XDG directories:
+  notes to `~/.local/share/airport-info/notes`, recents to
+  `~/.local/state/airport-info/recents.json`. Moved automatically on the next
+  run, which says what it moved; the cache was already in `~/.cache`.
+
 - Airports display as `ATL`, not `KATL`. The ICAO form sits beside it, and
   either spelling still resolves. Services that publish under the ICAO
   identifier — AirNav, LiveATC, the FAA record — still use it.
