@@ -276,7 +276,7 @@ function linkRows(d) {
                ["notams", "NOTAMs"], ["weather", "Weather"],
                // Live tower audio belongs on the front page too, not only
                // beside the frequencies it goes with.
-               ["liveatc", "Listen on LiveATC"]]
+               ["liveatc", "LiveATC"]]
   var out = []
   for (var i = 0; i < order.length; i++) {
     var k = order[i][0]
