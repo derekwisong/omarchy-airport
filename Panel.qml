@@ -30,6 +30,14 @@ Item {
   // property of that name is shadowed and reads back as the child list.
   property var airportData: null
   property string loadingIdent: ""
+  // What select() last asked for. A response is only allowed to touch the
+  // highlight if the highlight is still sitting where that request left it.
+  property string requestedIdent: ""
+  // Which airport the slow lazy fetches were asked for. Overpass and AirNav
+  // take seconds; without this, walking the rail lands one airport's FBOs on
+  // the next airport's page.
+  property string fboIdent: ""
+  property string amenitiesIdent: ""
   // The local record renders on its own; conditions and TFRs arrive after.
   property bool liveLoading: false
   onLiveLoadingChanged: {
@@ -281,8 +289,15 @@ Item {
     loadDebounce.stop()
     root.selectedIdent = ident
     root.loadingIdent = ident
+    root.requestedIdent = ident
     root.fbo = null
     root.amenities = null
+    if (fboProcess.running) fboProcess.running = false
+    if (amenitiesProcess.running) amenitiesProcess.running = false
+    root.fboLoading = false
+    root.amenitiesLoading = false
+    root.fboIdent = ""
+    root.amenitiesIdent = ""
     root.amenityFilter = ""
     root.amenityTerminal = ""
     if (panelProcess.running) panelProcess.running = false
@@ -300,7 +315,13 @@ Item {
       if (parsed && parsed.header) {
         root.airportData = parsed
         root.currentIdent = parsed.header.ident
-        root.selectedIdent = parsed.header.ident
+        // Adopt the canonical spelling - "KPOU" was asked for, "POU" is what
+        // the rail rows are keyed on - but only while the user is still on
+        // that row. Walking the list with the arrows is faster than a load,
+        // and a response that reasserts the highlight drags the cursor back
+        // to an airport the user has already gone past.
+        if (root.selectedIdent === root.requestedIdent)
+          root.selectedIdent = parsed.header.ident
         loadLive(parsed.header.ident)
         if (root.tab === root.tabAmenities || root.tab === root.tabGround)
           ensureGroundData()
@@ -315,11 +336,13 @@ Item {
     if (!root.currentIdent) return
     if (!root.fbo && !root.fboLoading) {
       root.fboLoading = true
+      root.fboIdent = root.currentIdent
       fboProcess.command = ["python3", root.engine, "fbo", root.currentIdent, "--json"]
       fboProcess.running = true
     }
     if (!root.amenities && !root.amenitiesLoading) {
       root.amenitiesLoading = true
+      root.amenitiesIdent = root.currentIdent
       amenitiesProcess.command = ["python3", root.engine, "amenities",
                                   root.currentIdent, "--json"]
       amenitiesProcess.running = true
@@ -587,6 +610,7 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (root.fboIdent !== root.currentIdent) return
         try { root.fbo = JSON.parse(String(text || "{}")) } catch (e) { root.fbo = null }
       }
     }
@@ -597,6 +621,7 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (root.amenitiesIdent !== root.currentIdent) return
         try { root.amenities = JSON.parse(String(text || "{}")) } catch (e) { root.amenities = null }
       }
     }
