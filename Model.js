@@ -269,9 +269,14 @@ function tafLines(taf) {
   return String(taf).replace(/\s+(?=FM\d|TEMPO|BECMG|PROB)/g, "\n  ")
 }
 
+// Destinations that describe the airport rather than any one page of it. They
+// live in the header for that reason: on the Runways page you are no less
+// likely to want AirNav than on the Summary. Links that belong to a single row
+// - a plate's PDF, a restaurant's map pin - stay with their row.
 function linkRows(d) {
   var links = (d && d.links) || {}
-  var order = [["directions", "Directions"], ["airnav", "AirNav"],
+  var order = [["diagram", "Airport diagram"],
+               ["directions", "Directions"], ["airnav", "AirNav"],
                ["skyvector", "SkyVector"], ["faa_nfdc", "FAA"],
                ["weather", "Weather"],
                // Live tower audio belongs on the front page too, not only

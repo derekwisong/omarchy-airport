@@ -78,7 +78,7 @@ the approach plates:
 
 | Page | What's there |
 |---|---|
-| **Summary** | Location, elevation, conditions in plain English, **FAA delays and closures**, a forecast band, longest runway and surface, control tower and its hours, airspace class, fuel, attended hours, landing fee, and links out — AirNav, driving directions, SkyVector, FAA, LiveATC |
+| **Summary** | Location, elevation, conditions in plain English, **FAA delays and closures**, a forecast band, longest runway and surface, control tower and its hours, airspace class, fuel, attended hours, landing fee |
 | **Weather** | Flight category spelled out, wind, visibility, sky, **ceiling**, temperature, dew point, altimeter, pressure and density altitude, civil twilight and sunrise/sunset, a **forecast timeline** read out of the TAF, then the raw METAR and TAF |
 | **Amenities** | Food, shops and lounges as a table grouped by concourse, filterable, each name linking to its Google Maps listing |
 | **Runways** | An aligned table: every runway per end — lengths, surface, lighting, alignment, ILS, VGSI, displaced thresholds, LDA and obstructions — plus pattern altitude and the diagram |
@@ -87,9 +87,15 @@ the approach plates:
 | **Services** | Attended hours, parking, customs, manager and owner, FBOs with live fuel prices |
 | **Notes** | Your notes rendered as markdown, with an Edit button that opens your editor, plus the raw FAA remarks |
 
+Links out live in the **header**, not on a page: the airport diagram, driving directions,
+AirNav, SkyVector, the FAA record, aviationweather.gov and LiveATC all describe the airport
+rather than any one view of it, and on the Runways page you are no less likely to want AirNav
+than on the Summary. Links that belong to a single row — a plate's PDF, a restaurant's map
+pin, the TFR list — stay with their row.
+
 The **Summary** is written for a traveller and a pilot at once — no CTAF, no density
 altitude, no pattern altitude. Those live on the pages that are about flying the aeroplane.
-The **airport diagram** is linked in the header, so it is reachable from every page.
+
 
 **Weather is written for people first.** The header says *"Scattered clouds at 7,000 ft, 83°F,
 wind from the west-northwest (300°) at 5 kt"*, not `30005KT 10SM SCT070 28/16 A2984`.

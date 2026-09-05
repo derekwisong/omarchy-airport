@@ -938,29 +938,12 @@ Item {
                 font.pixelSize: Style.font.title
               }
 
-              Row {
-                spacing: Style.space(12)
-                Text {
-                  textFormat: Text.PlainText
-                  text: (root.header && root.header.where) || ""
-                  color: Color.muted
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.bodySmall
-                }
-                Text {
-                  visible: !!(root.header && root.header.diagram)
-                  textFormat: Text.RichText
-                  text: "<a href='" + (root.header ? root.header.diagram : "")
-                    + "' style='color:" + Color.accent + "'>Airport diagram</a>"
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.bodySmall
-                  onLinkActivated: function (link) { root.openLink(link) }
-                  MouseArea {
-                    anchors.fill: parent
-                    acceptedButtons: Qt.NoButton
-                    cursorShape: Qt.PointingHandCursor
-                  }
-                }
+              Text {
+                textFormat: Text.PlainText
+                text: (root.header && root.header.where) || ""
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
               }
 
               Text {
@@ -974,6 +957,33 @@ Item {
                 color: Color.menu.text
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
+              }
+
+              // Where the airport goes when you leave. In the header because
+              // every page has the same answer, and Flow so a narrow panel
+              // wraps them instead of clipping.
+              Flow {
+                visible: !!root.header
+                width: parent.width
+                spacing: Style.space(12)
+
+                Repeater {
+                  model: Model.linkRows(root.airportData)
+                  delegate: Text {
+                    required property var modelData
+                    textFormat: Text.RichText
+                    text: "<a href='" + modelData.url + "' style='color:"
+                      + Color.accent + ";text-decoration:none'>" + modelData.label + "</a>"
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                    onLinkActivated: function (link) { root.openLink(link) }
+                    MouseArea {
+                      anchors.fill: parent
+                      acceptedButtons: Qt.NoButton
+                      cursorShape: Qt.PointingHandCursor
+                    }
+                  }
+                }
               }
             }
 
@@ -1107,23 +1117,6 @@ Item {
 
                   Row {
                     spacing: Style.space(14)
-                    Repeater {
-                      model: Model.linkRows(root.airportData)
-                      delegate: Text {
-                        required property var modelData
-                        textFormat: Text.RichText
-                        text: "<a href='" + modelData.url + "' style='color:"
-                          + Color.accent + "'>" + modelData.label + "</a>"
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.bodySmall
-                        onLinkActivated: function (link) { root.openLink(link) }
-                        MouseArea {
-                          anchors.fill: parent
-                          acceptedButtons: Qt.NoButton
-                          cursorShape: Qt.PointingHandCursor
-                        }
-                      }
-                    }
                   }
 
                   Item { width: 1; height: Style.space(4) }
@@ -1591,23 +1584,6 @@ Item {
                   }
 
                   Item { width: 1; height: Style.space(10) }
-                  Text {
-                    visible: !!(root.airportData && root.airportData.links
-                                && root.airportData.links.weather)
-                    textFormat: Text.RichText
-                    text: "<a href='" + (root.airportData && root.airportData.links
-                            ? root.airportData.links.weather : "")
-                      + "' style='color:" + Color.accent
-                      + "'>Live weather on aviationweather.gov</a>"
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
-                    onLinkActivated: function (link) { root.openLink(link) }
-                    MouseArea {
-                      anchors.fill: parent
-                      acceptedButtons: Qt.NoButton
-                      cursorShape: Qt.PointingHandCursor
-                    }
-                  }
                 }
 
                 // ============ 2 AMENITIES ============
@@ -1889,20 +1865,6 @@ Item {
                     font.family: Style.font.family
                     font.pixelSize: Style.font.bodySmall
                   }
-                  Text {
-                    visible: !!(root.runwayData && root.runwayData.diagram)
-                    textFormat: Text.RichText
-                    text: "<a href='" + (root.runwayData ? root.runwayData.diagram : "")
-                      + "' style='color:" + Color.accent + "'>Airport diagram (PDF)</a>"
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
-                    onLinkActivated: function (link) { root.openLink(link) }
-                    MouseArea {
-                      anchors.fill: parent
-                      acceptedButtons: Qt.NoButton
-                      cursorShape: Qt.PointingHandCursor
-                    }
-                  }
                 }
 
                 // ============ 4 PROCEDURES ============
@@ -2017,22 +1979,6 @@ Item {
                   }
 
                   Item { width: 1; height: Style.space(14) }
-                  Text {
-                    visible: !!(root.airportData && root.airportData.links
-                                && root.airportData.links.liveatc)
-                    textFormat: Text.RichText
-                    text: "<a href='" + (root.airportData && root.airportData.links
-                            ? root.airportData.links.liveatc : "")
-                      + "' style='color:" + Color.accent + "'>Listen on LiveATC</a>"
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
-                    onLinkActivated: function (link) { root.openLink(link) }
-                    MouseArea {
-                      anchors.fill: parent
-                      acceptedButtons: Qt.NoButton
-                      cursorShape: Qt.PointingHandCursor
-                    }
-                  }
                 }
 
                 // ============ 6 GROUND SERVICES ============

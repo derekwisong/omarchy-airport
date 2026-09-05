@@ -180,6 +180,14 @@ check "directions link"       "maps/dir"            $APT panel KPOU --no-record
 check "liveatc link"          "liveatc.net"         $APT panel KPOU --no-record
 check "notes path exposed"    "notes_path"          $APT panel KPOU --no-record
 check "no notam machinery"    '"weather"'           $APT panel KPOU --no-record
+# Not even a link to a NOTAM search: pointing at one reads as though the
+# plugin had checked something it never checks.
+LINKKEYS=$($APT panel KPOU --no-record | python3 -c "import json,sys;print(','.join(json.load(sys.stdin)['links'].keys()))")
+if [[ "$LINKKEYS" != *notam* ]]; then
+  echo "ok   no notam link in the payload"; pass=$((pass+1))
+else
+  echo "FAIL payload still carries a notam link: $LINKKEYS"; fail=$((fail+1))
+fi
 
 # The summary must stay free of cockpit jargon.
 SUMKEYS=$($APT panel KPOU --no-record | python3 -c "import json,sys;print(','.join(json.load(sys.stdin)['summary'].keys()))")

@@ -3936,7 +3936,6 @@ def official_links(rec, diagram_url=""):
         "airnav": "https://www.airnav.com/airport/%s" % ident,
         "faa_nfdc": "https://nfdc.faa.gov/nfdcApps/services/ajv5/airportDisplay.jsp"
                     "?airportId=%s" % rec["id"],
-        "notams": "https://notams.aim.faa.gov/notamSearch/nsapp.html#/",
         "tfr": "https://tfr.faa.gov/tfr3/?page=list",
         "weather": "https://aviationweather.gov/data/metar/?ids=%s" % ident,
         "skyvector": "https://skyvector.com/airport/%s" % rec["id"],
@@ -3950,7 +3949,7 @@ def official_links(rec, diagram_url=""):
     if diagram_url:
         links["diagram"] = diagram_url
     if rec["source"] != "faa":
-        for key in ("faa_nfdc", "notams", "tfr"):
+        for key in ("faa_nfdc", "tfr"):
             links.pop(key, None)
     return links
 
