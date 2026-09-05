@@ -1128,6 +1128,140 @@ Item {
 
                   Item { width: 1; height: Style.space(4) }
 
+                  // ---- forecast at a glance ----
+                  // The same band as the Weather page, captioned so it reads
+                  // without a licence: what the sky is doing now, when that
+                  // changes, and what the colours stand for.
+                  Item {
+                    visible: Model.outlookSegments(root.outlook).length > 0
+                    width: parent.width
+                    height: glanceCol.implicitHeight
+
+                    Column {
+                      id: glanceCol
+                      width: parent.width
+                      spacing: Style.space(5)
+
+                      Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        textFormat: Text.PlainText
+                        text: Model.outlookHeadline(root.outlook, root.clockTick)
+                        color: Color.menu.text
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                      }
+
+                      Item {
+                        width: parent.width
+                        height: Style.space(19)
+
+                        readonly property real nowFraction:
+                          Model.outlookNow(root.outlook, root.clockTick)
+
+                        Rectangle {
+                          id: glanceBand
+                          width: parent.width
+                          height: Style.space(8)
+                          radius: Style.space(2)
+                          color: Color.menu.border
+                          clip: true
+
+                          Repeater {
+                            model: Model.outlookSegments(root.outlook)
+                            delegate: Rectangle {
+                              required property var modelData
+                              x: glanceBand.width * modelData.offset
+                              width: Math.max(1, glanceBand.width * modelData.fraction)
+                              height: glanceBand.height
+                              color: Model.categoryColor(modelData.category, Color.muted)
+                            }
+                          }
+                        }
+
+                        Rectangle {
+                          visible: parent.nowFraction >= 0
+                          x: glanceBand.width * parent.nowFraction - width / 2
+                          y: -Style.space(2)
+                          width: Style.space(2)
+                          height: glanceBand.height + Style.space(4)
+                          radius: width / 2
+                          color: Color.menu.text
+                          border.color: Color.menu.background
+                          border.width: 1
+                          Behavior on x { NumberAnimation { duration: 400 } }
+                        }
+
+                        Text {
+                          visible: parent.nowFraction >= 0
+                          x: Math.min(glanceBand.width - implicitWidth,
+                                      Math.max(0, glanceBand.width * parent.nowFraction
+                                                  - implicitWidth / 2))
+                          y: glanceBand.height + Style.space(3)
+                          textFormat: Text.PlainText
+                          text: "now"
+                          color: Color.muted
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                        }
+
+                        Repeater {
+                          model: Model.outlookTicks(root.outlook, root.clockTick)
+                          delegate: Text {
+                            required property var modelData
+                            visible: modelData.relative !== ""
+                            x: Math.min(glanceBand.width - implicitWidth,
+                                        Math.max(0, glanceBand.width * modelData.offset
+                                                    - implicitWidth / 2))
+                            y: glanceBand.height + Style.space(3)
+                            textFormat: Text.PlainText
+                            text: modelData.relative
+                            color: Color.muted
+                            font.family: "monospace"
+                            font.pixelSize: Style.font.caption
+                          }
+                        }
+                      }
+
+                      // What the colours stand for - only the ones this
+                      // forecast actually uses.
+                      Row {
+                        width: parent.width
+                        spacing: Style.space(12)
+
+                        Repeater {
+                          model: Model.outlookLegend(root.outlook)
+                          delegate: Row {
+                            required property var modelData
+                            spacing: Style.space(5)
+
+                            Rectangle {
+                              anchors.verticalCenter: parent.verticalCenter
+                              width: Style.space(8)
+                              height: Style.space(8)
+                              radius: Style.space(2)
+                              color: Model.categoryColor(modelData.category, Color.muted)
+                            }
+                            Text {
+                              anchors.verticalCenter: parent.verticalCenter
+                              textFormat: Text.PlainText
+                              text: modelData.text
+                              color: Color.muted
+                              font.family: Style.font.family
+                              font.pixelSize: Style.font.caption
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  Item {
+                    width: 1
+                    height: Style.space(6)
+                    visible: Model.outlookSegments(root.outlook).length > 0
+                  }
+
                   // The delay and TFR lines below arrive with the live fetch.
                   // Without this the bottom of the page is simply blank and
                   // then is not, with nothing to say which it was.
@@ -1302,7 +1436,7 @@ Item {
                   Item {
                     visible: Model.outlookSegments(root.outlook).length > 0
                     width: parent.width
-                    height: Style.space(48)
+                    height: Style.space(62)
 
                     readonly property real nowFraction:
                       Model.outlookNow(root.outlook, root.clockTick)
@@ -1368,18 +1502,33 @@ Item {
                     }
 
                     Repeater {
-                      model: Model.outlookTicks(root.outlook)
-                      delegate: Text {
+                      model: Model.outlookTicks(root.outlook, root.clockTick)
+                      delegate: Column {
                         required property var modelData
-                        x: Math.min(outlookBand.width - implicitWidth,
+                        x: Math.min(outlookBand.width - width,
                                     Math.max(0, outlookBand.width * modelData.offset
-                                                - implicitWidth / 2))
+                                                - width / 2))
                         y: outlookBand.y + outlookBand.height + Style.space(3)
-                        textFormat: Text.PlainText
-                        text: modelData.label
-                        color: Color.muted
-                        font.family: "monospace"
-                        font.pixelSize: Style.font.caption
+                        spacing: 0
+
+                        Text {
+                          anchors.horizontalCenter: parent.horizontalCenter
+                          textFormat: Text.PlainText
+                          text: modelData.label
+                          color: Color.muted
+                          font.family: "monospace"
+                          font.pixelSize: Style.font.caption
+                        }
+                        Text {
+                          anchors.horizontalCenter: parent.horizontalCenter
+                          visible: modelData.relative !== ""
+                          textFormat: Text.PlainText
+                          text: modelData.relative
+                          color: Color.muted
+                          opacity: 0.7
+                          font.family: "monospace"
+                          font.pixelSize: Style.font.caption
+                        }
                       }
                     }
                   }

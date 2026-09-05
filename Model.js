@@ -433,20 +433,29 @@ function zulu(iso) {
   return t < 0 ? s : s.substr(t + 1, 5) + "Z"
 }
 
-// Hour marks along the band, one every six hours, so the bar can be read
-// against the clock rather than only against itself.
-function outlookTicks(outlook) {
+// Hour marks along the band, one every six hours. Each carries both readings:
+// Zulu, which is what a TAF is written in and what a pilot briefs against, and
+// an offset from now, which is what anyone else can act on without doing
+// timezone arithmetic in their head. Callers show whichever their audience
+// reads. `tick` is unused - it makes the binding re-evaluate on the clock.
+function outlookTicks(outlook, tick) {
   if (!outlook) return []
   var start = Date.parse(outlook.valid_from), end = Date.parse(outlook.valid_to)
   var span = end - start
   if (!(span > 0)) return []
+  var now = Date.now()
   var out = []
   var d = new Date(start)
   d.setUTCMinutes(0, 0, 0)
   while (d.getTime() <= end) {
-    if (d.getUTCHours() % 6 === 0 && d.getTime() >= start)
+    if (d.getUTCHours() % 6 === 0 && d.getTime() >= start) {
+      var delta = Math.round((d.getTime() - now) / 3600000)
       out.push({ offset: (d.getTime() - start) / span,
-                 label: ("0" + d.getUTCHours()).slice(-2) + "Z" })
+                 label: ("0" + d.getUTCHours()).slice(-2) + "Z",
+                 // A mark in the past is history, not a forecast to plan
+                 // against, so it gets no offset rather than a negative one.
+                 relative: delta > 0 ? "+" + delta + "h" : "" })
+    }
     d = new Date(d.getTime() + 3600000)
   }
   return out
@@ -481,5 +490,92 @@ function outlookRows(outlook) {
     out.push({ time: zulu(g.from) + "-" + zulu(g.to), category: g.category || "",
                text: g.summary || "", tag: tag || "TEMPO" })
   }
+  return out
+}
+
+
+// ---- reading the band without a licence -----------------------------------
+// The colours are flight categories, which mean nothing to someone who does
+// not fly. These translate them into what the sky is actually doing, and say
+// when it changes - in hours from now rather than Zulu, because a traveller
+// reading "11:00Z" has to do timezone arithmetic to learn anything.
+//
+// Deliberately says nothing about delays. Low cloud correlates with them, but
+// this forecast does not know about traffic, crews or the rest of the system,
+// and a plugin that will not assert a missing NOTAM should not guess at that
+// either.
+
+var CATEGORY_PLAIN = {
+  VFR:  { short: "clear",                title: "Clear" },
+  MVFR: { short: "some cloud or haze",   title: "Some cloud or haze" },
+  IFR:  { short: "low cloud, instrument flying",
+          title: "Low cloud or poor visibility" },
+  LIFR: { short: "very low cloud or fog", title: "Very low cloud or fog" }
+}
+
+function plainCategory(c, key) {
+  var e = CATEGORY_PLAIN[c]
+  return e ? e[key || "short"] : (c || "")
+}
+
+function relativeHours(ms) {
+  var h = ms / 3600000
+  if (h < 0.75) return "within the hour"
+  if (h < 1.75) return "in about an hour"
+  if (h < 24) return "in about " + Math.round(h) + " hours"
+  return "in about " + Math.round(h / 24) + " day" + (h < 36 ? "" : "s")
+}
+
+// One line: what it is now, and the next time that changes.
+function outlookHeadline(outlook, tick) {
+  if (!outlook || !outlook.timeline || !outlook.timeline.length) return ""
+  var now = Date.now()
+  var line = outlook.timeline
+  var current = null, change = null
+  for (var i = 0; i < line.length; i++) {
+    var a = Date.parse(line[i].from), b = Date.parse(line[i].to)
+    if (a <= now && now < b) current = line[i]
+    if (current && !change && a > now && line[i].category !== current.category)
+      change = line[i]
+  }
+  // Before the forecast starts, describe its opening period instead.
+  if (!current) current = line[0]
+  var text = plainCategory(current.category, "title") + " now"
+  if (change)
+    text += ", turning to " + plainCategory(change.category) + " "
+      + relativeHours(Date.parse(change.from) - now)
+  else
+    text += ", holding through the forecast"
+
+  // Thunderstorms are the one phenomenon worth pulling forward: everyone
+  // understands them, and they are why an otherwise fine day goes wrong.
+  var storms = null
+  var overlays = outlook.overlays || []
+  for (var j = 0; j < overlays.length; j++) {
+    if (/thunder/i.test(overlays[j].weather || "")) { storms = overlays[j]; break }
+  }
+  if (storms) {
+    var at = Date.parse(storms.from)
+    text += " · thunderstorms possible "
+      + (at > now ? relativeHours(at - now) : "now")
+      + (storms.probability ? " (" + storms.probability + "% chance)" : "")
+  }
+  return text
+}
+
+// Only the categories this forecast actually contains, so a clear day does not
+// carry a four-colour key explaining weather it is not having.
+function outlookLegend(outlook) {
+  if (!outlook || !outlook.timeline) return []
+  var seen = {}, out = []
+  var all = (outlook.timeline || []).concat(outlook.overlays || [])
+  for (var i = 0; i < all.length; i++) {
+    var c = all[i].category
+    if (!c || seen[c]) continue
+    seen[c] = true
+    out.push({ category: c, text: plainCategory(c) })
+  }
+  var order = { VFR: 0, MVFR: 1, IFR: 2, LIFR: 3 }
+  out.sort(function (a, b) { return (order[a.category] || 9) - (order[b.category] || 9) })
   return out
 }

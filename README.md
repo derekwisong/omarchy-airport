@@ -198,6 +198,11 @@ English and `TEMPO`/`PROB` groups kept separate as the overlays they are.
 03:00Z-07:00Z  MVFR  PROB30 — light thunderstorms with rain, mist, visibility 3 miles
 ```
 
+Marks along the band carry both readings: Zulu, which is what a TAF is written in and what a
+pilot briefs against, and an offset from now — `+4h`, `+10h` — which is what anyone else can
+act on without doing timezone arithmetic. The Summary shows only the offsets; the Weather page
+shows both. A mark already in the past gets no offset rather than a negative one.
+
 **Now** is marked on the band and creeps along while the panel is open, so "when does this
 change" is a glance rather than arithmetic against a Zulu clock. On a forecast whose valid
 period has already passed the marker is absent rather than pinned to an edge, since a stale
@@ -210,6 +215,27 @@ thresholds, so they mean the same thing as the category on the current condition
 ```bash
 python3 scripts/apt.py outlook KORD
 ```
+
+### At a glance, on the Summary
+
+The same band appears on the Summary, captioned so it reads without a licence:
+
+```
+Clear now, turning to some cloud or haze in about 9 hours · thunderstorms possible
+in about 2 hours (30% chance)
+▓▓▓▓▓▓▓▓▓░░░░░░░░░░░▓▓▓▓▓▓▓▓▓▓▓▓
+now      +4h        +10h      +16h
+■ clear   ■ some cloud or haze
+```
+
+The colours are flight categories, which mean nothing to someone who does not fly, so the
+line above says what the sky is doing and when that changes, and the key below names only the
+categories this particular forecast contains — a clear day carries no four-colour legend
+explaining weather it is not having.
+
+It deliberately says nothing about delays. Low cloud correlates with them, but a forecast
+knows nothing about traffic, crews or the rest of the system, and a plugin that refuses to
+invent a NOTAM should not guess at that either.
 
 ## FAA status
 
