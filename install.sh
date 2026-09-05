@@ -8,7 +8,7 @@ ID=$(python3 -c "import json;print(json.load(open('manifest.json'))['id'])")
 DEST="$HOME/.config/omarchy/plugins/$ID"
 
 mkdir -p "$DEST"
-cp -r manifest.json Model.js Panel.qml scripts "$DEST/"
+cp -r manifest.json Model.js *.qml scripts "$DEST/"
 rm -rf "$DEST/scripts/__pycache__"
 
 omarchy plugin validate "$DEST"

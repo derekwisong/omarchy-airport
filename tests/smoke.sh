@@ -76,6 +76,15 @@ check "taf decodes weather"  "thunderstorms with rain" python3 -c "$PARSE" "$TAF
 check "P6SM is not a limit"  '"visibility_sm": 10.0' python3 -c "$PARSE" "$TAF_FIXTURE"
 check "taf outlook via CLI"  "Forecast"        $APT outlook KORD
 
+# An unreachable weather service must not read as an airport with no station.
+UNREACH=$(https_proxy=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 \
+  AIRPORT_INFO_CACHE="$(mktemp -d)" $APT panel KPOU --no-record 2>/dev/null || true)
+if [[ -z "$UNREACH" || "$UNREACH" != *"No weather station reports"* ]]; then
+  echo "ok   offline does not claim there is no station"; pass=$((pass+1))
+else
+  echo "FAIL offline reported 'no weather station reports'"; fail=$((fail+1))
+fi
+
 # FAA delay and closure reporting. Which airports are affected changes by the
 # minute, so these assert the plumbing and the honesty rules, never a delay.
 check "national status feed"  '"airports"'  $APT status --json

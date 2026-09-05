@@ -2,8 +2,6 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
-import QtQuick.Pdf
-import Qt5Compat.GraphicalEffects
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -235,7 +233,18 @@ Item {
     var live = null
     try { live = JSON.parse(String(text || "{}")) } catch (e) { live = null }
     root.liveLoading = false
-    if (!live || !root.airportData) return
+    if (!root.airportData) return
+    if (!live || !live.weather) {
+      // The fetch produced nothing usable. Stop saying "fetching" forever, and
+      // do not let the absent answer read as "this airport has no station".
+      if (root.airportData.weather && root.airportData.weather.pending) {
+        var stalled = {}
+        for (var k in root.airportData) stalled[k] = root.airportData[k]
+        stalled.weather = { "available": false, "unreachable": true }
+        root.airportData = stalled
+      }
+      return
+    }
     // Arrowing on while this was in flight means the answer is for an airport
     // that is no longer on screen. Drop it rather than showing ATL's weather
     // under POU's name.
@@ -338,7 +347,8 @@ Item {
   function openLink(url) {
     if (!url) return
     var text = String(url)
-    if (/^https:\/\/[a-z.]*faa\.gov\/.*\.pdf$/i.test(text)) openChart(text)
+    if (root.chartViewerAvailable
+        && /^https:\/\/[a-z.]*faa\.gov\/.*\.pdf$/i.test(text)) openChart(text)
     else Qt.openUrlExternally(text)
   }
 
@@ -382,8 +392,9 @@ Item {
     try { result = JSON.parse(String(text || "{}")) } catch (e) { result = null }
     root.chartLoading = false
     if (result && result.ok && result.path) {
+      // The viewer binds its own document to this path; the panel no longer
+      // owns a PdfDocument, because that type may not exist here.
       root.chartPath = result.path
-      chartDoc.source = Qt.resolvedUrl("file://" + result.path)
     } else {
       root.chartError = (result && result.error)
         ? result.error : "could not download this chart"
@@ -396,14 +407,22 @@ Item {
     root.chartError = ""
   }
 
-  function chartStep(delta) {
-    if (!chartDoc || chartDoc.pageCount <= 0) return
-    root.chartPage = Math.max(0, Math.min(chartDoc.pageCount - 1, root.chartPage + delta))
+  // Whether this machine can show a chart inline at all. Set false the first
+  // time the viewer fails to load, so later charts go straight to a browser
+  // instead of flashing an empty card each time.
+  property bool chartViewerAvailable: true
+
+  // No PDF support on this machine. Hand this chart to a browser and stop
+  // trying to draw later ones inline.
+  function chartViewerFailed() {
+    var pending = root.chartUrl
+    root.chartViewerAvailable = false
+    root.chartOpen = false
+    if (pending) Qt.openUrlExternally(pending)
   }
 
-  function chartZoomBy(factor) {
-    root.chartZoom = Math.max(0.25, Math.min(6.0, root.chartZoom * factor))
-  }
+  function chartStep(delta) { if (chartLoader.item) chartLoader.item.step(delta) }
+  function chartZoomBy(factor) { if (chartLoader.item) chartLoader.item.zoomBy(factor) }
 
   // Chosen deliberately - record the visit and refresh the rail.
   function commit(ident) {
@@ -587,10 +606,6 @@ Item {
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyChart(text) }
   }
 
-  // Source is set imperatively when a path arrives. Binding it meant an empty
-  // string reached PdfPageImage before the first chart, which warns
-  // 'Protocol "" is unknown' on every frame.
-  PdfDocument { id: chartDoc }
 
   FileView {
     id: notesFile
@@ -665,12 +680,12 @@ Item {
               // scroll the chart instead of moving the airport underneath it.
               Keys.onEscapePressed: root.chartOpen ? root.closeChart() : root.close()
               Keys.onDownPressed: function (event) {
-                if (root.chartOpen) chartView.scrollBy(120)
+                if (root.chartOpen) chartLoader.item ? chartLoader.item.scrollBy(120) : null
                 else if (event.modifiers & Qt.ControlModifier) root.scrollBody(60)
                 else root.moveSelection(1)
               }
               Keys.onUpPressed: function (event) {
-                if (root.chartOpen) chartView.scrollBy(-120)
+                if (root.chartOpen) chartLoader.item ? chartLoader.item.scrollBy(-120) : null
                 else if (event.modifiers & Qt.ControlModifier) root.scrollBody(-60)
                 else root.moveSelection(-1)
               }
@@ -685,15 +700,17 @@ Item {
                   root.chartZoomBy(0.8); event.accepted = true; return
                 }
                 if (root.chartOpen && event.key === Qt.Key_I) {
-                  root.chartInvert = !root.chartInvert; event.accepted = true; return
+                  if (chartLoader.item) chartLoader.item.toggleInvert(); event.accepted = true; return
                 }
                 if (root.chartOpen && event.key === Qt.Key_0) {
-                  root.chartZoom = 1.0; event.accepted = true; return
+                  if (chartLoader.item) chartLoader.item.resetZoom(); event.accepted = true; return
                 }
                 if (root.chartOpen && (event.key === Qt.Key_PageDown
                     || event.key === Qt.Key_PageUp)) {
-                  chartView.scrollBy(event.key === Qt.Key_PageDown
-                                     ? chartView.height * 0.9 : -chartView.height * 0.9)
+                  if (chartLoader.item)
+                    chartLoader.item.scrollBy(event.key === Qt.Key_PageDown
+                                              ? chartLoader.height * 0.9
+                                              : -chartLoader.height * 0.9)
                   event.accepted = true; return
                 }
                 // Tab walks the concourse filter on the Amenities page. The
@@ -1169,6 +1186,18 @@ Item {
                   spacing: Style.space(5)
 
                   Text {
+                    visible: !!(root.weather && root.weather.unreachable)
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.PlainText
+                    text: "Could not reach the weather service. This says nothing "
+                      + "about the airport - only that the report did not arrive."
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                  }
+
+                  Text {
                     visible: !!(root.weather && root.weather.pending)
                     width: parent.width
                     textFormat: Text.PlainText
@@ -1182,7 +1211,7 @@ Item {
                     // Only once the fetch has actually come back - an absent
                     // report and one still in flight are not the same claim.
                     visible: !!(root.weather && !root.weather.available
-                                && !root.weather.pending)
+                                && !root.weather.pending && !root.weather.unreachable)
                     width: parent.width
                     wrapMode: Text.WordWrap
                     textFormat: Text.PlainText
@@ -2159,223 +2188,36 @@ Item {
 
 
         // ---- chart viewer ----------------------------------------------
-        // Sits over the card rather than replacing it, so backing out with Esc
-        // returns to exactly the airport and page you left.
-        Item {
-          id: chartView
-          visible: root.chartOpen
+        // Isolated in ChartView.qml: its Qt PDF and GraphicalEffects imports
+        // are not present on a stock Omarchy install, and a failed import
+        // takes down the file it sits in. Through a Loader, losing them costs
+        // the inline viewer and nothing else.
+        Loader {
+          id: chartLoader
           anchors.fill: parent
           anchors.margins: Style.normalBorderWidth
+          active: root.chartOpen && root.chartViewerAvailable
+          visible: active && status === Loader.Ready
+          source: "ChartView.qml"
 
-          function scrollBy(dy) {
-            chartFlick.contentY = Math.max(
-              0, Math.min(chartFlick.contentY + dy,
-                          Math.max(0, chartFlick.contentHeight - chartFlick.height)))
-          }
+          // Deferred: this handler closes the chart, and `active` is bound to
+          // that, so acting inline is a binding loop.
+          onStatusChanged: if (status === Loader.Error)
+            Qt.callLater(root.chartViewerFailed)
 
-          Rectangle {
-            anchors.fill: parent
-            radius: Style.cornerRadius
-            color: Color.menu.background
-            // Swallow clicks so they never reach the airport underneath.
-            MouseArea { anchors.fill: parent }
-          }
-
-          // ---- toolbar ----
-          Item {
-            id: chartBar
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: Style.space(18)
-            height: chartTitleText.implicitHeight + Style.space(10)
-
-            Text {
-              id: chartTitleText
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              width: parent.width - chartTools.width - Style.space(16)
-              elide: Text.ElideRight
-              textFormat: Text.PlainText
-              text: root.chartTitle
-              color: Color.menu.text
-              font.family: Style.font.family
-              font.pixelSize: Style.font.title
-              font.bold: true
-            }
-
-            Row {
-              id: chartTools
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(14)
-
-              Text {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: chartDoc.pageCount > 1
-                textFormat: Text.PlainText
-                text: "page " + (root.chartPage + 1) + " of " + chartDoc.pageCount
-                color: Color.muted
-                font.family: Style.font.family
-                font.pixelSize: Style.font.caption
-              }
-
-              Repeater {
-                model: [
-                  { label: "−", action: "out" },
-                  { label: "reset", action: "reset" },
-                  { label: "+", action: "in" },
-                  { label: "invert", action: "invert" },
-                  { label: "open externally", action: "external" },
-                  { label: "close", action: "close" }
-                ]
-                delegate: Text {
-                  required property var modelData
-                  anchors.verticalCenter: parent.verticalCenter
-                  textFormat: Text.PlainText
-                  text: modelData.label
-                  color: (modelData.action === "invert" && root.chartInvert)
-                    ? Color.accent
-                    : (toolArea.containsMouse ? Color.accent : Color.muted)
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                  MouseArea {
-                    id: toolArea
-                    anchors.fill: parent
-                    anchors.margins: -Style.space(4)
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                      if (modelData.action === "in") root.chartZoomBy(1.25)
-                      else if (modelData.action === "out") root.chartZoomBy(0.8)
-                      else if (modelData.action === "reset") root.chartZoom = 1.0
-                      else if (modelData.action === "invert")
-                        root.chartInvert = !root.chartInvert
-                      else if (modelData.action === "external")
-                        Qt.openUrlExternally(root.chartUrl)
-                      else root.closeChart()
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // ---- the page ----
-          Flickable {
-            id: chartFlick
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: chartBar.bottom
-            anchors.bottom: chartFoot.top
-            anchors.margins: Style.space(18)
-            anchors.topMargin: Style.space(8)
-            clip: true
-            contentWidth: Math.max(width, chartPage.width)
-            contentHeight: Math.max(height, chartPage.height)
-            boundsBehavior: Flickable.StopAtBounds
-            visible: !root.chartLoading && root.chartError === "" && !!root.chartPath
-
-            // Charts are line art on white. Rendering at the displayed pixel
-            // size rather than scaling a smaller bitmap is what keeps the
-            // minimums text and the taxiway labels readable.
-            // Geometry lives on a plain Item, so the page has a size before
-            // any PDF exists. PdfPageImage warns 'Protocol "" is unknown' on
-            // every frame if it is alive with no document loaded, so it is
-            // only created once a chart has actually been fetched.
-            Item {
-              id: chartPage
-              x: Math.max(0, (chartFlick.width - width) / 2)
-              y: Math.max(0, (chartFlick.height - height) / 2)
-
-              // Page size comes from the document, never from implicitWidth:
-              // sourceSize feeds back into an image's implicit size, so sizing
-              // off that is a binding loop.
-              property size pageSize: chartDoc.status === PdfDocument.Ready
-                && chartDoc.pageCount > 0
-                ? chartDoc.pagePointSize(root.chartPage)
-                : Qt.size(612, 792)
-              property real fitScale: (pageSize.width > 0 && pageSize.height > 0
-                                       && chartFlick.width > 0 && chartFlick.height > 0)
-                ? Math.min(chartFlick.width / pageSize.width,
-                           chartFlick.height / pageSize.height)
-                : 1
-              width: pageSize.width * fitScale * root.chartZoom
-              height: pageSize.height * fitScale * root.chartZoom
-              Behavior on width { NumberAnimation { duration: 90 } }
-              Behavior on height { NumberAnimation { duration: 90 } }
-
-              // The sheet. Without it a chart that renders its background
-              // transparent puts black linework on a near-black card, which is
-              // exactly as readable as it sounds.
-              Rectangle {
-                anchors.fill: parent
-                color: root.chartInvert ? "#000000" : "#ffffff"
-              }
-
-              Loader {
-                anchors.fill: parent
-                active: !!root.chartPath
-                sourceComponent: PdfPageImage {
-                  document: chartDoc
-                  currentFrame: root.chartPage
-                  layer.enabled: root.chartInvert
-                  // RGB is swapped end for end; alpha keeps its identity
-                  // mapping (0 -> 0, 1 -> 1). Inverting alpha as well turns
-                  // the page's transparent background opaque white and
-                  // swallows the ink with it.
-                  layer.effect: LevelAdjust {
-                    minimumOutput: Qt.rgba(1, 1, 1, 0)
-                    maximumOutput: Qt.rgba(0, 0, 0, 1)
-                  }
-                  // Render at the size actually shown, so the minimums table
-                  // and the taxiway labels stay readable, not upscaled.
-                  sourceSize.width: Math.max(1, Math.round(width))
-                  sourceSize.height: Math.max(1, Math.round(height))
-                }
-              }
-            }
-
-            // Ctrl+wheel zooms, plain wheel scrolls, as in every other viewer.
-            WheelHandler {
-              acceptedModifiers: Qt.ControlModifier
-              onWheel: function (event) {
-                root.chartZoomBy(event.angleDelta.y > 0 ? 1.15 : 0.87)
-              }
-            }
-          }
-
-          Text {
-            anchors.centerIn: chartFlick
-            width: chartFlick.width * 0.7
-            horizontalAlignment: Text.AlignHCenter
-            wrapMode: Text.WordWrap
-            textFormat: Text.PlainText
-            visible: root.chartLoading || root.chartError !== ""
-            text: root.chartError !== ""
-              ? root.chartError + "\n\nUse \u201copen externally\u201d to view it in a browser."
-              : "Fetching the chart…"
-            color: Color.muted
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-          }
-
-          Text {
-            id: chartFoot
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.margins: Style.space(18)
-            textFormat: Text.PlainText
-            text: (chartDoc.pageCount > 1 ? "←→ page · " : "")
-              + "+/− zoom · 0 reset · i invert · ↑↓ PgUp/PgDn scroll · Esc back"
-              + "   —   not for navigation"
-            color: Color.muted
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
+          onLoaded: {
+            item.path = Qt.binding(function () { return root.chartPath })
+            item.title = Qt.binding(function () { return root.chartTitle })
+            item.url = Qt.binding(function () { return root.chartUrl })
+            item.loading = Qt.binding(function () { return root.chartLoading })
+            item.error = Qt.binding(function () { return root.chartError })
+            item.closeRequested.connect(root.closeChart)
+            item.externalRequested.connect(function () {
+              Qt.openUrlExternally(root.chartUrl)
+            })
           }
         }
+
 
         // ---- footer ----
         Text {

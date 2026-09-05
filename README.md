@@ -143,6 +143,21 @@ o.bind("SUPER + <key>", "Airports", "omarchy-shell shell toggle derekwisong.airp
 omarchy-shell shell toggle derekwisong.airport
 ```
 
+## Requirements
+
+Python 3 (standard library only — no pip install) and the Omarchy shell. Nothing else is
+required.
+
+**Optional:** in-panel chart viewing needs `qt6-webengine`, which supplies `QtQuick.Pdf`, and
+`qt6-5compat` for the invert effect. Neither is a dependency of Omarchy or Quickshell, so
+neither is present by default, and `qt6-webengine` is a 282 MB install. Without them the
+plugin works normally and charts open in your browser instead. Install them only if you want
+plates and diagrams inside the panel:
+
+```bash
+sudo pacman -S --needed qt6-webengine qt6-5compat
+```
+
 ## Charts
 
 Approach plates and airport diagrams open **inside the panel**, not in an external viewer —
@@ -156,6 +171,10 @@ Charts are drawn on their own white sheet rather than on the panel's card — th
 these pages with a transparent background, so black linework on a dark theme is invisible,
 which is not a thing to discover on the ramp. **`i` inverts** for night use: white linework on
 black, alpha left alone so the page stays a page. The setting holds for the session.
+
+If `QtQuick.Pdf` is missing the viewer is simply never loaded — its imports live in
+`ChartView.qml` rather than `Panel.qml` precisely so that a missing module costs the viewer
+and not the whole plugin — and charts open externally as before.
 
 Charts are downloaded once into `~/.cache/airport-info/charts/` and reused; the 28-day cycle
 is part of the URL, so a file that exists is a file that is current. The engine only fetches

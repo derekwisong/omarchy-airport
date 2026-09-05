@@ -1588,7 +1588,14 @@ def tfrs_for_state(state):
     return {"available": True, "tfrs": hits, "state": state}
 
 
+# Set when a weather fetch failed outright and there was no stale copy to fall
+# back on. "The service did not answer" and "this field has no station" are
+# different facts, and only one of them is safe to put on screen.
+_WX_UNREACHABLE = False
+
+
 def _wx_cached(kind, ident, fetch):
+    global _WX_UNREACHABLE
     """Cache weather on disk, negatives included.
 
     Without caching the miss, a field with no weather station (most small
@@ -1618,7 +1625,8 @@ def _wx_cached(kind, ident, fetch):
             try:
                 return json.loads(path.read_text()) or None
             except Exception:
-                return None
+                pass
+        _WX_UNREACHABLE = True
         return None
     path.write_text("null")  # station genuinely publishes nothing
     return None
@@ -3760,6 +3768,10 @@ def live_weather(rec, offline=False):
     metar = None if offline else fetch_metar_cached(station)
     taf = None if offline else fetch_taf_cached(station)
     weather = humanize_weather(metar, taf, rec["elev"])
+    if not weather.get("available") and _WX_UNREACHABLE:
+        # Drop the summary rather than report an absence we cannot vouch for.
+        weather.pop("summary", None)
+        weather["unreachable"] = True
     if not offline and rec["lat"] is not None:
         twilight = fetch_twilight(rec["lat"], rec["lon"])
         if twilight:
