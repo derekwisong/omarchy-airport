@@ -12,15 +12,10 @@ omarchy plugin add https://github.com/derekwisong/omarchy-airport.git --enable
 omarchy-shell shell toggle derekwisong.airport
 ```
 
-Needs Python 3 — standard library only, nothing to `pip install`.
+Needs Python 3 — standard library only, nothing to `pip install`, nothing to install as root.
 
-**Optional:** in-panel chart viewing needs `qt6-webengine` (for `QtQuick.Pdf`) and
-`qt6-5compat`. Neither ships with Omarchy, and `qt6-webengine` is 282 MB. Without them
-everything else works and charts open in your browser.
-
-```bash
-sudo pacman -S --needed qt6-webengine qt6-5compat
-```
+Approach plates and diagrams are shown inside the panel where Qt's PDF module is available,
+and open in your browser where it is not. Either way there is nothing to set up.
 
 ### Reaching it
 
@@ -58,7 +53,7 @@ the links out — stays put on every page.
 | **Services** | Attended hours, parking, customs, manager, owner, FBOs with fuel prices |
 | **Notes** | Your markdown, edited in your editor, live on save |
 
-Approach plates and diagrams open in the panel. `i` inverts them for night use.
+`i` inverts a chart for night use.
 
 ![The forecast timeline](docs/weather.png)
 

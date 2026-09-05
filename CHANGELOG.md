@@ -30,8 +30,8 @@ changes; `omarchy plugin update derekwisong.airport` is enough.
 - FAA delays and closures from `nasstatus.faa.gov` — ground delay programs,
   ground stops, arrival and departure delays, field closures.
 - Approach plates and airport diagrams open inside the panel, with `i` to
-  invert for night use. Falls back to a browser where Qt's PDF module is
-  absent.
+  invert for night use, and in a browser where Qt's PDF module is absent.
+  Nothing to install either way.
 - Keyboard reaches the whole panel: `Ctrl`+arrows and `Ctrl+Home`/`End`
   scroll, `Tab` walks the concourse filter, `Shift+Del` forgets a recent.
 - `apt.py outlook`, `apt.py status`, `apt.py live` and `apt.py pdf`.
