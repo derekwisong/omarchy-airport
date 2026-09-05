@@ -19,18 +19,51 @@ airport. Everything comes from public, unauthenticated sources — no API keys.
 
 ```bash
 git clone <this-repo> && cd airport-info-plugin
-./install.sh              # copies into ~/.config/omarchy/plugins/, enables, builds the cache
+./install.sh              # copies into ~/.config/omarchy/plugins/ and enables it
 ```
 
 Or from a git URL, the normal Omarchy way:
 
 ```bash
 omarchy plugin add https://github.com/<you>/airport-info-plugin.git --enable
+```
+
+Either way there is nothing else to run. The panel builds its data cache the first time you
+open it, showing what it is doing while it works, and rebuilds it in the background when the
+FAA cycle rolls over. To build it ahead of time instead:
+
+```bash
 python3 ~/.config/omarchy/plugins/derekwisong.airport/scripts/apt.py cache update
 ```
 
-The cache is one 28-day FAA cycle in SQLite under `~/.cache/airport-info/` — about 8 seconds
-and 40 MB. Re-run `cache update` when `cache status` says the cycle has rolled over.
+## The cache
+
+Every FAA and OurAirports source is a bulk publication — a whole 28-day subscription file, a
+national chart metafile — so there is no way to fetch one airport. Looking up KPOU means
+holding the file that has all 19,411 of them. What the plugin can do is fetch only the
+sources a given page needs, and only once per cycle:
+
+| Tier | Download | What needs it | When |
+|---|---|---|---|
+| `core` | 22 MB | Search, ranking, IATA codes, every US page | First run |
+| `charts` | 18 MB | Approach plates, SIDs, STARs, the airport diagram linked in every header | First run |
+| `world` | 4 MB | Runway geometry for non-US fields | First time you look one up |
+
+That comes to **about 9 seconds and 54 MB** in SQLite under `~/.cache/airport-info/`. Most
+users never fetch the `world` tier at all.
+
+The cache is rebuilt beside the live one and swapped in at the end, so a failed download
+leaves the working cache alone and a refresh never blanks the panel mid-use. Staleness is the
+FAA cycle rolling over, not the file getting old — a cache built on day 27 of a cycle is out
+of date two days later, and one built on day 1 is current for four weeks.
+
+```bash
+python3 scripts/apt.py cache status            # cycle, size, which tiers are present
+python3 scripts/apt.py cache status --json     # the same, for scripts
+python3 scripts/apt.py cache update            # rebuild
+python3 scripts/apt.py cache update --if-stale # rebuild only if the cycle rolled
+python3 scripts/apt.py cache update --progress # one JSON line per step
+```
 
 ## The panel
 
@@ -44,11 +77,11 @@ the approach plates:
 
 | Page | What's there |
 |---|---|
-| **Summary** | Location, elevation, conditions in plain English, longest runway and surface, control tower and its hours, airspace class, fuel, attended hours, landing fee, and links out — AirNav, driving directions, SkyVector, FAA record, NOTAM search |
-| **Weather** | Flight category spelled out, wind, visibility, sky, **ceiling**, temperature, dew point, altimeter, pressure and density altitude, civil twilight and sunrise/sunset, then the raw METAR and TAF |
+| **Summary** | Location, elevation, conditions in plain English, **FAA delays and closures**, longest runway and surface, control tower and its hours, airspace class, fuel, attended hours, landing fee, and links out — AirNav, driving directions, SkyVector, FAA record, NOTAM search, LiveATC |
+| **Weather** | Flight category spelled out, wind, visibility, sky, **ceiling**, temperature, dew point, altimeter, pressure and density altitude, civil twilight and sunrise/sunset, a **forecast timeline** read out of the TAF, then the raw METAR and TAF |
 | **Amenities** | Food, shops and lounges as a table grouped by concourse, filterable, each name linking to its Google Maps listing |
 | **Runways** | An aligned table: every runway per end — lengths, surface, lighting, alignment, ILS, VGSI, displaced thresholds, LDA and obstructions — plus pattern altitude and the diagram |
-| **Procedures** | Approaches grouped by runway, SIDs, STARs, ODPs, minimums, hot spots, each linked to its PDF |
+| **Procedures** | Approaches grouped by runway, SIDs, STARs, ODPs, minimums, hot spots, each opening in the panel's chart viewer |
 | **Frequencies** | The ones you'd actually tune, with CTAF and tower weighted, then approach/departure, plus a LiveATC link |
 | **Services** | Attended hours, parking, customs, manager and owner, FBOs with live fuel prices |
 | **Notes** | Your notes rendered as markdown, with an Edit button that opens your editor, plus the raw FAA remarks |
@@ -109,6 +142,103 @@ o.bind("SUPER + <key>", "Airports", "omarchy-shell shell toggle derekwisong.airp
 ```bash
 omarchy-shell shell toggle derekwisong.airport
 ```
+
+## Charts
+
+Approach plates and airport diagrams open **inside the panel**, not in an external viewer —
+handing a plate to a browser meant the panel closed to show it, losing the airport, the page
+and the search behind it. Esc backs out to exactly where you were.
+
+`←→` pages a multi-page plate, `+`/`−` and `Ctrl`+wheel zoom, `0` fits the page again, and
+`↑↓`/`PgUp`/`PgDn` scroll. "Open externally" is still there for when you want it in a browser.
+
+Charts are drawn on their own white sheet rather than on the panel's card — the FAA renders
+these pages with a transparent background, so black linework on a dark theme is invisible,
+which is not a thing to discover on the ramp. **`i` inverts** for night use: white linework on
+black, alpha left alone so the page stays a page. The setting holds for the session.
+
+Charts are downloaded once into `~/.cache/airport-info/charts/` and reused; the 28-day cycle
+is part of the URL, so a file that exists is a file that is current. The engine only fetches
+from the FAA chart hosts, over https — the URLs come from the plugin's own tables, but it
+refuses anything else rather than downloading whatever it is handed.
+
+```bash
+python3 scripts/apt.py pdf <chart-url>          # download, print the local path
+python3 scripts/apt.py pdf <chart-url> --json
+```
+
+## Forecast timeline
+
+The TAF was already being downloaded for every airport and shown only as its raw bulletin.
+It is parsed now into a band of time — one segment per forecast period, width proportional to
+how long it lasts, coloured by flight category — with the periods listed underneath in plain
+English and `TEMPO`/`PROB` groups kept separate as the overlays they are.
+
+```
+     now
+      │
+06Z   ▼    12Z        18Z        00Z        06Z
+▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+01:00Z-11:00Z  VFR   scattered clouds at 5,000 ft, wind north-northeast (30°) at 6 kt
+11:00Z-19:00Z  MVFR  scattered clouds at 800 ft, broken clouds at 1,500 ft
+03:00Z-07:00Z  MVFR  PROB30 — light thunderstorms with rain, mist, visibility 3 miles
+```
+
+**Now** is marked on the band and creeps along while the panel is open, so "when does this
+change" is a glance rather than arithmetic against a Zulu clock. On a forecast whose valid
+period has already passed the marker is absent rather than pinned to an edge, since a stale
+TAF should not look current.
+
+This is the one genuinely predictive thing here, and it needed no new source: the forecast was
+already in hand. Categories are computed with the standard FAA ceiling and visibility
+thresholds, so they mean the same thing as the category on the current conditions.
+
+```bash
+python3 scripts/apt.py outlook KORD
+```
+
+## FAA status
+
+Ground delay programs, ground stops, arrival and departure delays, and field closures, from
+`nasstatus.faa.gov` — public, key-free, and the whole national picture in under 2 KB. One
+fetch covers every airport, so it is cached nationally rather than requested per airport.
+
+```bash
+python3 scripts/apt.py status          # everywhere the FAA reports a problem
+python3 scripts/apt.py status DCA      # one airport
+```
+
+The Summary says *"No delays or closures reported by the FAA"* only when the feed actually
+answered. If it could not be reached the line is absent, because an unreachable feed is not
+evidence that an airport is running normally. This is delays and closures — still not NOTAMs.
+
+## Keyboard
+
+The panel is usable without the mouse. Everything is typed at the search field, so the keys
+that act on the page carry a modifier rather than stealing characters from it.
+
+| Key | Does |
+|---|---|
+| `↑` `↓` | Move through the airport list |
+| `←` `→` | Change page |
+| `Enter` | Pick the highlighted airport (this is what records a recent) |
+| `Ctrl+D` | Favourite / unfavourite |
+| `PgUp` `PgDn` | Scroll the page |
+| `Ctrl+↑` `Ctrl+↓` | Scroll a line at a time |
+| `Ctrl+Home` `Ctrl+End` | Jump to the top or bottom of the page |
+| `Tab` `Shift+Tab` | On **Amenities**, walk the concourse filter |
+| `Esc` | Back out of a chart, then close the panel |
+
+## Speed
+
+An airport is drawn in two passes. Everything local — runways, frequencies, procedures,
+services — comes from SQLite and renders in about **75 ms**. Conditions and TFRs are a
+network call that costs 300–1300 ms on a cold cache, so they arrive separately and fold in
+when they land. Walking the list with the arrow keys never waits on aviationweather.gov.
+
+Until the conditions arrive the panel says nothing about them, rather than showing "no
+weather station reports" — an answer that has not come back yet is not the same claim as an
+airport that has no station.
 
 ## Recents
 
@@ -218,6 +348,15 @@ and `omarchy-shell shell rescanPlugins` returns success, but **neither re-instan
 already-mounted bar widget** — the old component keeps running and your edit appears to do
 nothing. `omarchy restart shell` is the only thing that reliably reloads plugin QML.
 
+### Adding a NASR column
+
+Rows are stored as positional JSON arrays over the allowlists at the top of `apt.py`
+(`APT_KEEP`, `RWY_KEEP`, `RWY_END_KEEP`), because NASR ships ~90 columns per airport and
+carrying all of them cost 61 MB and most of the build. A column that is not on its list reads
+back as absent, exactly as an empty NASR field always has — so if a new feature needs one, add
+it to the list and rebuild the cache. The list in force at build time is written to `meta`,
+so an existing cache stays readable when the lists change.
+
 ### Two traps worth knowing
 
 **Never name a QML property `data`.** `Item.data` is the built-in default children list, so
@@ -230,7 +369,7 @@ on `command` may not have propagated when you start the process in the same bloc
 the previous (or empty) argument list.
 
 ```bash
-./tests/smoke.sh              # 31 checks against the engine, network required
+./tests/smoke.sh              # 69 checks against the engine, network required
 ./tests/smoke.sh --with-osm   # adds the Overpass concourse check
 omarchy plugin validate .     # manifest and entry points
 ```

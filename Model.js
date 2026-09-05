@@ -273,7 +273,10 @@ function linkRows(d) {
   var links = (d && d.links) || {}
   var order = [["directions", "Directions"], ["airnav", "Open in AirNav"],
                ["skyvector", "SkyVector"], ["faa_nfdc", "FAA record"],
-               ["notams", "NOTAMs"], ["weather", "Weather"]]
+               ["notams", "NOTAMs"], ["weather", "Weather"],
+               // Live tower audio belongs on the front page too, not only
+               // beside the frequencies it goes with.
+               ["liveatc", "Listen on LiveATC"]]
   var out = []
   for (var i = 0; i < order.length; i++) {
     var k = order[i][0]
@@ -366,4 +369,113 @@ function tfrLine(t, us) {
   if (!n) return "No active TFRs in " + (t.state || "this state") + "."
   return n + " active TFR" + (n === 1 ? "" : "s") + " in " + t.state
     + " — proximity not checked, see tfr.faa.gov"
+}
+
+
+// FAA-reported delays and closures for the Summary. An empty list from a feed
+// that answered means the FAA is reporting nothing; a feed that did not answer
+// returns no rows at all, because "unknown" and "fine" are different claims.
+function statusLines(s) {
+  if (!s || !s.available) return []
+  var items = s.items || []
+  var out = []
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i]
+    var bits = []
+    // Closure reasons are raw NOTAM text and run to several lines; they would
+    // swamp the Summary, so only a short reason is shown inline.
+    if (it.reason && it.reason.length <= 90) bits.push(it.reason)
+    if (it.detail) bits.push(it.detail)
+    out.push({ label: it.label, text: bits.join(" — "), alert: true })
+  }
+  if (!out.length)
+    out.push({ label: "", text: "No delays or closures reported by the FAA.",
+               alert: false })
+  return out
+}
+
+
+// ---- TAF outlook --------------------------------------------------------
+// The forecast as a band of time rather than a bulletin: one segment per
+// period, width proportional to how long it lasts, coloured by flight
+// category. Pilots read the categories, travellers read the summaries.
+
+function outlookSegments(outlook) {
+  if (!outlook || !outlook.timeline || !outlook.timeline.length) return []
+  var start = Date.parse(outlook.valid_from)
+  var end = Date.parse(outlook.valid_to)
+  var span = end - start
+  if (!(span > 0)) return []
+  var out = []
+  for (var i = 0; i < outlook.timeline.length; i++) {
+    var g = outlook.timeline[i]
+    var a = Date.parse(g.from), b = Date.parse(g.to)
+    if (!(b > a)) continue
+    out.push({
+      fraction: (b - a) / span,
+      offset: (a - start) / span,
+      category: g.category || "",
+      from: zulu(g.from),
+      to: zulu(g.to)
+    })
+  }
+  return out
+}
+
+function zulu(iso) {
+  if (!iso) return ""
+  var s = String(iso)
+  var t = s.indexOf("T")
+  return t < 0 ? s : s.substr(t + 1, 5) + "Z"
+}
+
+// Hour marks along the band, one every six hours, so the bar can be read
+// against the clock rather than only against itself.
+function outlookTicks(outlook) {
+  if (!outlook) return []
+  var start = Date.parse(outlook.valid_from), end = Date.parse(outlook.valid_to)
+  var span = end - start
+  if (!(span > 0)) return []
+  var out = []
+  var d = new Date(start)
+  d.setUTCMinutes(0, 0, 0)
+  while (d.getTime() <= end) {
+    if (d.getUTCHours() % 6 === 0 && d.getTime() >= start)
+      out.push({ offset: (d.getTime() - start) / span,
+                 label: ("0" + d.getUTCHours()).slice(-2) + "Z" })
+    d = new Date(d.getTime() + 3600000)
+  }
+  return out
+}
+
+// Where "now" falls in the band, 0..1, or -1 when the clock is outside the
+// forecast's valid period - an expired TAF must not draw a marker at an edge
+// and imply it is current. `tick` is unused: it exists so the QML binding
+// re-evaluates on a timer, since Date.now() is not something QML can watch.
+function outlookNow(outlook, tick) {
+  if (!outlook) return -1
+  var start = Date.parse(outlook.valid_from), end = Date.parse(outlook.valid_to)
+  var span = end - start
+  if (!(span > 0)) return -1
+  var fraction = (Date.now() - start) / span
+  return (fraction < 0 || fraction > 1) ? -1 : fraction
+}
+
+function outlookRows(outlook) {
+  if (!outlook) return []
+  var out = []
+  var line = outlook.timeline || []
+  for (var i = 0; i < line.length; i++)
+    out.push({ time: zulu(line[i].from) + "-" + zulu(line[i].to),
+               category: line[i].category || "", text: line[i].summary || "",
+               tag: "" })
+  var ov = outlook.overlays || []
+  for (var j = 0; j < ov.length; j++) {
+    var g = ov[j]
+    var tag = g.kind === "prob" ? "" : String(g.kind || "").toUpperCase()
+    if (g.probability) tag = ("PROB" + g.probability + " " + tag).trim()
+    out.push({ time: zulu(g.from) + "-" + zulu(g.to), category: g.category || "",
+               text: g.summary || "", tag: tag || "TEMPO" })
+  }
+  return out
 }

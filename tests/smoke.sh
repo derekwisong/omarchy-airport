@@ -42,6 +42,47 @@ check "KATL approach count"     "APPROACHES (52)" $APT procedures KATL
 check "KATL runway filter"      "ILS OR LOC RWY 27R" $APT procedures KATL --runway 27R
 check "KATL diagram link"       "00026AD.PDF"    $APT charts KATL
 
+# The short FAA identifier is what shows; the ICAO form is carried, not shown
+# as the name, and either spelling has to resolve to the same airport.
+check "displays the FAA id"     "ATL  HARTSFIELD"   $APT info KATL
+check "bare id displays same"   "ATL  HARTSFIELD"   $APT info ATL
+check "ICAO annotated"          "(ICAO KATL)"       $APT info ATL
+check "no ICAO to annotate"     "00A  TOTAL RF"     $APT info 00A
+check "non-US identifier kept"  "EGLL  London"      $APT info EGLL
+check "official links use ICAO" "airnav.com/airport/KPOU" $APT panel KPOU --no-record
+
+# "24" is how NASR writes round-the-clock; on screen it must read as a time.
+check "continuous hours"        '"hours": "24 hours"' $APT panel KATL --no-record
+
+# Charts are viewed inside the panel, so the engine has to hand it a local file
+# rather than a URL - and must refuse to fetch anything that is not an FAA chart.
+check "chart downloads"    '"ok": true'   $APT pdf https://aeronav.faa.gov/d-tpp/2609/00286AD.PDF --json
+check "chart cached local" "/charts/"     $APT pdf https://aeronav.faa.gov/d-tpp/2609/00286AD.PDF --json
+check "chart host guarded" "not an FAA chart URL" $APT pdf https://example.com/x.pdf --json
+check "chart scheme guarded" "not an FAA chart URL" $APT pdf http://aeronav.faa.gov/x.pdf --json
+
+# The TAF outlook is parsed here, so it gets a fixed bulletin rather than
+# whatever the weather happens to be doing. Categories, times, the PROB
+# overlay and the P6SM rule are all pinned.
+TAF_FIXTURE='TAF KORD 050057Z 0501/0606 21005KT P6SM FEW050 SCT100 FM050145 03006KT P6SM SCT050 BKN100 PROB30 0503/0507 3SM -TSRA BR SCT025 BKN050CB FM051100 02008KT P6SM SCT008 BKN015 FM051900 03012KT P6SM SCT025 FM060000 04005KT 2SM BR OVC006'
+# The raw TAF must be read before apt.py is loaded, because importing it
+# clears sys.argv.
+PARSE="import importlib.util,sys,json;raw=sys.argv[1];sys.argv=['x'];s=importlib.util.spec_from_file_location('apt','scripts/apt.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(json.dumps(m.parse_taf(raw)))"
+check "taf timeline built"   '"timeline"'      python3 -c "$PARSE" "$TAF_FIXTURE"
+check "1500ft ceiling is MVFR" '"category": "MVFR"' python3 -c "$PARSE" "$TAF_FIXTURE"
+check "600ft and 2sm is IFR"   '"category": "IFR"'  python3 -c "$PARSE" "$TAF_FIXTURE"
+check "taf prob overlay"     '"probability": 30' python3 -c "$PARSE" "$TAF_FIXTURE"
+check "taf decodes weather"  "thunderstorms with rain" python3 -c "$PARSE" "$TAF_FIXTURE"
+check "P6SM is not a limit"  '"visibility_sm": 10.0' python3 -c "$PARSE" "$TAF_FIXTURE"
+check "taf outlook via CLI"  "Forecast"        $APT outlook KORD
+
+# FAA delay and closure reporting. Which airports are affected changes by the
+# minute, so these assert the plumbing and the honesty rules, never a delay.
+check "national status feed"  '"airports"'  $APT status --json
+check "quiet field says so"   "No delays or closures reported by the FAA." $APT status POU
+check "non-US has no FAA status" "outside the US" $APT status EGLL
+check "live payload has status"  '"status"'  $APT live POU
+
 # Cycle currency must always be stated.
 check "cycle stamped"           "NASR cycle 2026" $APT info KPOU
 check "not-for-navigation"      "NOT FOR NAVIGATION" $APT info KPOU
@@ -66,7 +107,8 @@ check "TFR list"                "Active TFRs"    $APT tfr KPOU --no-geometry
 check "nearby excludes helipads" "SKY ACRES"     $APT nearby KPOU --radius 30 --min-runway 2500
 
 # Panel payload: the shape the QML depends on.
-check "panel header"        '"ident": "KPOU"'      $APT panel KPOU --no-record
+check "panel header"        '"ident": "POU"'       $APT panel KPOU --no-record
+check "panel header keeps ICAO" '"icao": "KPOU"'  $APT panel KPOU --no-record
 check "panel overview"      '"longest_runway"'     $APT panel KPOU --no-record
 check "panel attended hrs"  "0700-2130"            $APT panel KPOU --no-record
 check "panel ground block"  '"fbo_remarks"'        $APT panel KPOU --no-record
@@ -90,7 +132,14 @@ else echo "FAIL search returned $DUPES duplicates"; fail=$((fail+1)); fi
 
 # Weather must read as English, and a field with no station must say so
 # rather than erroring.
-check "weather humanized"   "wind from the"  $APT panel KATL --no-record
+# Phrasing, not today's numbers: asserting "wind from the" failed whenever the
+# field happened to be calm, which is a property of the weather, not the code.
+WIND=$($APT panel KATL --no-record | python3 -c "import json,sys;print(json.load(sys.stdin)['weather'].get('wind',''))")
+if [[ "$WIND" == "calm" || "$WIND" == *"from the"* || "$WIND" == *"variable"* ]]; then
+  echo "ok   wind reads as English (\"$WIND\")"; pass=$((pass+1))
+else
+  echo "FAIL wind not humanized: '$WIND'"; fail=$((fail+1))
+fi
 check "category spelled out" "Visual Flight Rules" $APT panel KATL --no-record
 check "no-station handled"  '"available": false' $APT panel 44N --no-record
 
@@ -103,7 +152,17 @@ else
 fi
 check "approach freqs split"  '"approach"'          $APT panel KATL --no-record
 check "ceiling reported"      '"ceiling"'           $APT panel KATL --no-record
-check "single temp unit"      '"temp": "9'          $APT panel KATL --no-record
+# One unit, chosen from the locale - not a particular temperature. The old
+# check wanted a value in the 90s, so it failed on any cool day.
+TEMPS=$($APT panel KATL --no-record | python3 -c "
+import json,sys
+w=json.load(sys.stdin)['weather']
+print(w.get('temp',''), w.get('dewpoint',''))")
+if [[ "$TEMPS" == *"°F"* && "$TEMPS" != *"°C"* ]] || [[ "$TEMPS" == *"°C"* && "$TEMPS" != *"°F"* ]]; then
+  echo "ok   one temperature unit throughout ($TEMPS)"; pass=$((pass+1))
+else
+  echo "FAIL mixed or missing temperature units: '$TEMPS'"; fail=$((fail+1))
+fi
 check "airspace class B"      "Class B"             $APT panel KATL --no-record
 check "airspace class D hrs"  "CLASS D SVC"         $APT panel KPOU --no-record
 check "uncontrolled field"    '"towered": false'    $APT panel 44N  --no-record
@@ -125,10 +184,10 @@ fi
 # Search rows must key the same way recents do, or the favourite star on a
 # search result never matches the stored favourite.
 IDENT=$($APT search atl --limit 1 | python3 -c "import json,sys;print(json.load(sys.stdin)['results'][0].get('ident',''))")
-if [[ "$IDENT" == "KATL" ]]; then
+if [[ "$IDENT" == "ATL" ]]; then
   echo "ok   search rows key on ident"; pass=$((pass+1))
 else
-  echo "FAIL search row ident was '$IDENT' (expected KATL)"; fail=$((fail+1))
+  echo "FAIL search row ident was '$IDENT' (expected ATL)"; fail=$((fail+1))
 fi
 
 # Rendering an airport must not add it to recents; only an explicit pick does.
@@ -141,7 +200,7 @@ else
   echo "FAIL browsing added $COUNT entries to recents"; fail=$((fail+1))
 fi
 AIRPORT_INFO_RECENTS="$REC2" $APT recents touch KATL >/dev/null
-check "explicit pick records" "KATL" \
+check "explicit pick records" "ATL" \
   env AIRPORT_INFO_RECENTS="$REC2" python3 scripts/apt.py recents
 rm -rf "$(dirname "$REC2")"
 

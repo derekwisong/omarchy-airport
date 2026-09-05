@@ -15,7 +15,6 @@ NOT FOR NAVIGATION. Verify against official sources and current NOTAMs.
 """
 
 import argparse
-import csv
 import io
 import json
 import math
@@ -27,9 +26,23 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
-import zipfile
 from html.parser import HTMLParser
+
+# csv, zipfile and ElementTree are only ever touched while building the cache,
+# which happens once a cycle. Importing them on every lookup cost about 10ms of
+# the ~80ms an airport takes, so they are pulled in where they are used.
+csv = None
+zipfile = None
+ET = None
+
+
+def _load_build_modules():
+    global csv, zipfile, ET
+    if csv is None:
+        import csv as _csv
+        import zipfile as _zipfile
+        import xml.etree.ElementTree as _ET
+        csv, zipfile, ET = _csv, _zipfile, _ET
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -140,6 +153,16 @@ def nasr_cycle_date(today=None):
         if Http.exists("%s/%s_APT_CSV.zip" % (NFDC_EXTRA, nasr_stamp(d))):
             return d
     raise RuntimeError("could not find a published NASR cycle near %s" % candidate)
+
+
+def nasr_cycle_expected(today=None):
+    """The cycle that should be current, by arithmetic alone.
+
+    nasr_cycle_date() confirms against the server, which is right before a
+    download and wasteful for a staleness check the panel runs on every open."""
+    today = today or date.today()
+    steps = (today - NASR_ANCHOR).days // 28
+    return NASR_ANCHOR + timedelta(days=28 * steps)
 
 
 def nasr_stamp(d):
@@ -261,12 +284,17 @@ CREATE INDEX IF NOT EXISTS oa_rwy_ix ON oa_rwy(ident);
 """
 
 
-def db_connect(readonly=True):
-    if readonly and not DB_PATH.exists():
+def db_connect(readonly=True, path=None):
+    path = path or DB_PATH
+    if readonly and not path.exists():
         die("no cache yet - run:  apt.py cache update")
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    # The panel runs several of these at once - a page load, an FBO lookup, an
+    # amenity fetch - and a lazily built tier takes a write lock for a few
+    # seconds. Waiting for it beats failing the read.
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -295,6 +323,90 @@ def _read_csv_from_zip(zf, filename):
             yield row
 
 
+# --------------------------------------------------------------------------
+# NASR row storage
+#
+# NASR publishes ~90 columns per airport and ~78 per runway end. Storing each
+# raw row as a JSON object cost 61 MB of the cache and most of its build time,
+# almost all of it survey dates, source codes, coordinate fragments in
+# degrees/minutes/seconds (lat/lon are already REAL columns) and FAA-internal
+# bookkeeping that nothing here reads.
+#
+# These lists are the columns the CLI and panel actually read, plus a margin of
+# fields that plainly belong to this tool's subject so a new feature usually
+# needs no schema change. Add a column here when you start using it; until a
+# rebuild it reads back as absent, exactly as an empty NASR field always has.
+#
+# Rows are stored positionally - a JSON array ordered by the list below, with
+# trailing empties trimmed - because repeating ~40 column names on every one of
+# 39,816 runway ends cost more than the values themselves. The list in force at
+# build time is written to meta, so a cache stays readable even if these lists
+# change, and dict-shaped blobs from an older build are still understood.
+# --------------------------------------------------------------------------
+
+APT_KEEP = """
+    AIRFRAME_REPAIR_SER_CODE ARPT_ID ARPT_NAME ARPT_STATUS ARTCC_NAME
+    BCN_LGT_SKED BOTTLED_OXY_TYPE BULK_OXY_TYPE CHART_NAME CITY
+    CONTR_FUEL_AVBL COUNTY_NAME CUST_FLAG DIRECTION_CODE
+    DIST_CITY_TO_AIRPORT ELEV FACILITY_USE_CODE FAR_139_TYPE_CODE FSS_NAME
+    FUEL_TYPES ICAO_ID JOINT_USE_FLAG LAT_DECIMAL LGT_SKED LNDG_FEE_FLAG
+    LONG_DECIMAL MAG_HEMIS MAG_VARN MEDICAL_USE_FLAG MIL_LNDG_FLAG
+    NOTAM_ID OTHER_SERVICES OWNERSHIP_TYPE_CODE PHONE_NO
+    PWR_PLANT_REPAIR_SER SEG_CIRCLE_MKR_FLAG SITE_NO SITE_TYPE_CODE
+    STATE_CODE STATE_NAME TOLL_FREE_NO TPA TRNS_STRG_HGR_FLAG
+    TRNS_STRG_TIE_FLAG TWR_TYPE_CODE USER_FEE_FLAG WIND_INDCR_FLAG
+""".split()
+
+RWY_KEEP = """
+    ARPT_ID CITY COND GROSS_WT_DDTW GROSS_WT_DTW GROSS_WT_DW GROSS_WT_SW
+    PAVEMENT_TYPE_CODE PCN_PCR_NUMBER RWY_ID RWY_LEN RWY_LGT_CODE
+    RWY_WIDTH SITE_NO SITE_TYPE_CODE STATE_CODE SUBGRADE_STRENGTH_CODE
+    SURFACE_TYPE_CODE TIRE_PRES_CODE TREATMENT_CODE
+""".split()
+
+RWY_END_KEEP = """
+    ACLT_STOP_DIST_AVBL APCH_LGT_SYSTEM_CODE ARPT_ID CITY CNTRLN_DIR_CODE
+    CNTRLN_LGTS_AVBL_FLAG CNTRLN_OFFSET DISPLACED_THR_ELEV
+    DISPLACED_THR_LEN DIST_FROM_THR FAR_PART_77_CODE ILS_TYPE LAHSO_ALD
+    LAHSO_DESC LAT_DECIMAL LNDG_DIST_AVBL LONG_DECIMAL OBSTN_CLNC_SLOPE
+    OBSTN_HGT OBSTN_MRKD_CODE OBSTN_TYPE RIGHT_HAND_TRAFFIC_PAT_FLAG
+    RWY_END_ELEV RWY_END_ID RWY_END_INTERSECT_LAHSO RWY_END_LGTS_FLAG
+    RWY_ID RWY_MARKING_COND RWY_MARKING_TYPE_CODE
+    RWY_VISUAL_RANGE_EQUIP_CODE SITE_NO SITE_TYPE_CODE STATE_CODE TDZ_ELEV
+    TDZ_LGT_AVBL_FLAG THR_CROSSING_HGT TKOF_DIST_AVBL TKOF_RUN_AVBL
+    TRUE_ALIGNMENT VGSI_CODE VISUAL_GLIDE_PATH_ANGLE
+""".split()
+
+NASR_BLOB_KEYS = {"apt": APT_KEEP, "rwy": RWY_KEEP, "rwy_end": RWY_END_KEEP}
+_BLOB_KEYS_CACHE = {}
+
+
+def pack_row(row, keys):
+    """One NASR CSV row as a positional JSON array."""
+    vals = [row.get(k) or "" for k in keys]
+    while vals and not vals[-1]:
+        vals.pop()
+    return json.dumps(vals, separators=(",", ":"))
+
+
+def blob_keys(conn, table):
+    if table not in _BLOB_KEYS_CACHE:
+        raw = meta_get(conn, "blob_keys_" + table)
+        _BLOB_KEYS_CACHE[table] = json.loads(raw) if raw else list(NASR_BLOB_KEYS[table])
+    return _BLOB_KEYS_CACHE[table]
+
+
+def unpack_row(conn, table, text):
+    """Positional array back to a dict. Empty columns stay absent, which is how
+    the old object-shaped blobs behaved too."""
+    if not text:
+        return {}
+    vals = json.loads(text)
+    if isinstance(vals, dict):
+        return vals  # written by a build that predates positional storage
+    return {k: v for k, v in zip(blob_keys(conn, table), vals) if v}
+
+
 def _fnum(value):
     try:
         return float(value)
@@ -303,10 +415,11 @@ def _fnum(value):
 
 
 def build_nasr(conn, cycle_date):
+    _load_build_modules()
     stamp = nasr_stamp(cycle_date)
-    log("  downloading NASR %s airport records..." % stamp)
+    PROGRESS.step("Downloading FAA airport records")
     apt_zip = Http.get("%s/%s_APT_CSV.zip" % (NFDC_EXTRA, stamp), binary=True, timeout=300)
-    log("  downloading NASR %s frequencies..." % stamp)
+    PROGRESS.step("Downloading FAA frequencies")
     frq_zip = Http.get("%s/%s_FRQ_CSV.zip" % (NFDC_EXTRA, stamp), binary=True, timeout=300)
 
     for table in ("apt", "rwy", "rwy_end", "rmk", "con", "frq", "att", "airspace"):
@@ -324,19 +437,18 @@ def build_nasr(conn, cycle_date):
                 r.get("STATE_NAME", ""), r.get("COUNTY_NAME", ""),
                 _fnum(r.get("LAT_DECIMAL")), _fnum(r.get("LONG_DECIMAL")),
                 _fnum(r.get("ELEV")), r.get("SITE_TYPE_CODE", ""),
-                json.dumps({k: v for k, v in r.items() if v}),
+                pack_row(r, APT_KEEP),
             ))
         conn.executemany("INSERT INTO apt VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?)", rows)
         counts["airports"] = len(rows)
 
-        rows = [(r.get("ARPT_ID", ""), r.get("RWY_ID", ""),
-                 json.dumps({k: v for k, v in r.items() if v}))
+        rows = [(r.get("ARPT_ID", ""), r.get("RWY_ID", ""), pack_row(r, RWY_KEEP))
                 for r in _read_csv_from_zip(zf, names["APT_RWY.CSV"])]
         conn.executemany("INSERT INTO rwy VALUES (?,?,?)", rows)
         counts["runways"] = len(rows)
 
         rows = [(r.get("ARPT_ID", ""), r.get("RWY_ID", ""), r.get("RWY_END_ID", ""),
-                 json.dumps({k: v for k, v in r.items() if v}))
+                 pack_row(r, RWY_END_KEEP))
                 for r in _read_csv_from_zip(zf, names["APT_RWY_END.CSV"])]
         conn.executemany("INSERT INTO rwy_end VALUES (?,?,?,?)", rows)
         counts["runway_ends"] = len(rows)
@@ -362,7 +474,7 @@ def build_nasr(conn, cycle_date):
         conn.executemany("INSERT INTO con VALUES (?,?,?,?,?)", rows)
         counts["contacts"] = len(rows)
 
-    log("  downloading NASR %s class airspace..." % stamp)
+    PROGRESS.step("Downloading FAA class airspace")
     cls_zip = Http.get("%s/%s_CLS_ARSP_CSV.zip" % (NFDC_EXTRA, stamp), binary=True, timeout=300)
     with zipfile.ZipFile(io.BytesIO(cls_zip)) as zf:
         names = {n.upper(): n for n in zf.namelist()}
@@ -383,13 +495,16 @@ def build_nasr(conn, cycle_date):
         conn.executemany("INSERT INTO frq VALUES (?,?,?,?,?,?,?,?)", rows)
         counts["frequencies"] = len(rows)
 
+    for table, keys in NASR_BLOB_KEYS.items():
+        meta_set(conn, "blob_keys_" + table, json.dumps(keys))
     meta_set(conn, "nasr_cycle", cycle_date.isoformat())
     return counts
 
 
 def build_dtpp(conn):
+    _load_build_modules()
     cycle, effective = dtpp_cycle()
-    log("  downloading d-TPP cycle %s (effective %s)..." % (cycle, effective))
+    PROGRESS.step("Downloading approach and departure charts")
     xml = Http.get("%s/d-tpp/%s/xml_data/d-TPP_Metafile.xml" % (AERONAV, cycle), timeout=300)
     root = ET.fromstring(xml)
     conn.execute("DELETE FROM chart")
@@ -411,8 +526,9 @@ def build_dtpp(conn):
 
 
 def build_cs(conn):
+    _load_build_modules()
     edition, effective = cs_cycle()
-    log("  downloading Chart Supplement index %s..." % edition)
+    PROGRESS.step("Downloading the Chart Supplement index")
     xml = Http.get("%s/afd/%s/afd_%s.xml" % (AERONAV, edition, edition), timeout=180)
     root = ET.fromstring(xml)
     conn.execute("DELETE FROM cs")
@@ -432,13 +548,11 @@ def build_cs(conn):
     return {"chart_supplement_pages": len(rows)}
 
 
-def build_ourairports(conn):
-    log("  downloading OurAirports worldwide data...")
+def build_ourairports_apt(conn):
+    _load_build_modules()
+    PROGRESS.step("Downloading worldwide airport list")
     airports = Http.get(OURAIRPORTS + "/airports.csv", timeout=180)
-    runways = Http.get(OURAIRPORTS + "/runways.csv", timeout=180)
     conn.execute("DELETE FROM oa_apt")
-    conn.execute("DELETE FROM oa_rwy")
-
     rows = [(r.get("ident", ""), r.get("type", ""), r.get("name", ""),
              _fnum(r.get("latitude_deg")), _fnum(r.get("longitude_deg")),
              _fnum(r.get("elevation_ft")), r.get("iso_country", ""),
@@ -447,8 +561,14 @@ def build_ourairports(conn):
              r.get("local_code", ""), r.get("wikipedia_link", ""))
             for r in csv.DictReader(io.StringIO(airports))]
     conn.executemany("INSERT INTO oa_apt VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
-    count = {"world_airports": len(rows)}
+    return {"world_airports": len(rows)}
 
+
+def build_ourairports_rwy(conn):
+    _load_build_modules()
+    PROGRESS.step("Downloading worldwide runway data")
+    runways = Http.get(OURAIRPORTS + "/runways.csv", timeout=180)
+    conn.execute("DELETE FROM oa_rwy")
     rows = [(r.get("airport_ident", ""), r.get("length_ft", ""), r.get("width_ft", ""),
              r.get("surface", ""), r.get("lighted", ""), r.get("closed", ""),
              r.get("le_ident", ""), r.get("he_ident", ""),
@@ -456,51 +576,307 @@ def build_ourairports(conn):
              r.get("he_latitude_deg", ""), r.get("he_longitude_deg", ""))
             for r in csv.DictReader(io.StringIO(runways))]
     conn.executemany("INSERT INTO oa_rwy VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
-    count["world_runways"] = len(rows)
-    return count
+    return {"world_runways": len(rows)}
+
+
+# --------------------------------------------------------------------------
+# Tiers
+#
+# Every FAA and OurAirports source is a bulk publication - there is no
+# per-airport endpoint, so looking up one field means fetching the file that
+# holds all of them. What can be deferred is whole sources, and two of the
+# three biggest are only ever read by one page:
+#
+#   core    22 MB  NASR airports/frequencies/airspace + the worldwide airport
+#                  list. Everything needs this: search, ranking, IATA codes,
+#                  and every US page.
+#   charts  18 MB  d-TPP metafile and the Chart Supplement index. Every airport
+#                  view links its diagram, so this is built on first run too.
+#   world    4 MB  OurAirports runway geometry, read only for non-US fields.
+#                  Built the first time a non-US airport's runways are asked
+#                  for, which for most users is never.
+#
+# A first run is therefore core + charts, about 40 MB and eight seconds.
+# --------------------------------------------------------------------------
+
+TIERS = ("core", "charts", "world")
+# Every airport view links its diagram, so charts is not something a first run
+# can usefully skip - deferring it just moves the same download to the first
+# airport somebody opens. world is different: only non-US fields ever read it.
+DEFAULT_TIERS = ("core", "charts")
+TIER_STEPS = {"core": 5, "charts": 2, "world": 1}
+TIER_LABEL = {"core": "airport data", "charts": "charts and procedures",
+              "world": "worldwide runway data"}
+
+
+TIER_TABLE = {"core": "apt", "charts": "chart", "world": "oa_rwy"}
+
+
+def have_tier(conn, tier):
+    if meta_get(conn, "tier_" + tier) == "1":
+        return True
+    # A cache built before tiers existed carries no flags but has the rows.
+    # Trusting the table keeps it usable instead of rebuilding it on first read.
+    try:
+        return conn.execute(
+            "SELECT 1 FROM %s LIMIT 1" % TIER_TABLE[tier]).fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
+def build_tier(conn, tier, cycle=None):
+    counts = {}
+    if tier == "core":
+        counts.update(build_nasr(conn, cycle or nasr_cycle_date()))
+        counts.update(build_ourairports_apt(conn))
+        PROGRESS.step("Ranking airports for search")
+        compute_ranks(conn)
+    elif tier == "charts":
+        counts.update(build_dtpp(conn))
+        counts.update(build_cs(conn))
+    elif tier == "world":
+        counts.update(build_ourairports_rwy(conn))
+    meta_set(conn, "tier_" + tier, "1")
+    conn.commit()
+    return counts
+
+
+def ensure_tier(conn, tier):
+    """Build a deferred tier the moment something actually reads it.
+
+    Called from the read paths rather than the CLI commands so that every
+    caller - panel, CLI, another script - gets the data instead of a silently
+    empty table."""
+    if have_tier(conn, tier):
+        return
+    PROGRESS.begin(TIER_STEPS[tier], "Fetching %s" % TIER_LABEL[tier])
+    try:
+        build_tier(conn, tier)
+    except Exception as exc:
+        PROGRESS.fail(str(exc))
+        raise
+    PROGRESS.finish()
+
+
+# --------------------------------------------------------------------------
+# Progress
+#
+# A first run is a download, not an instant. The panel needs to say so, and it
+# can only do that if the engine reports where it is. With --progress each step
+# is one JSON line on stdout; without it, the same text goes to stderr as
+# before, so the CLI is unchanged.
+# --------------------------------------------------------------------------
+
+class Progress:
+    def __init__(self):
+        self.enabled = False
+        self.total = 0
+        self.n = 0
+
+    def _emit(self, obj):
+        if self.enabled:
+            print(json.dumps(obj), flush=True)
+
+    def begin(self, total, label=""):
+        self.total, self.n = total, 0
+        self._emit({"event": "begin", "total": total, "label": label})
+        if label:
+            log(label + "...")
+
+    def step(self, label):
+        self.n += 1
+        self._emit({"event": "step", "step": self.n, "total": self.total,
+                    "label": label})
+        log("  [%d/%d] %s..." % (self.n, self.total, label))
+
+    def finish(self, **extra):
+        payload = {"event": "done"}
+        payload.update(extra)
+        self._emit(payload)
+
+    def fail(self, message):
+        self._emit({"event": "error", "message": message})
+
+
+PROGRESS = Progress()
+
+
+# --------------------------------------------------------------------------
+# Cache status and rebuild
+# --------------------------------------------------------------------------
+
+def cache_state():
+    """What the panel needs to decide between using, building and refreshing."""
+    if not DB_PATH.exists():
+        return {"built": False, "stale": True, "tiers": {},
+                "expected_cycle": nasr_cycle_expected().isoformat()}
+    conn = db_connect()
+    have = meta_get(conn, "nasr_cycle", "")
+    expected = nasr_cycle_expected().isoformat()
+    state = {
+        "built": have_tier(conn, "core"),
+        "path": str(DB_PATH),
+        "nasr_cycle": have,
+        "expected_cycle": expected,
+        # The cycle rolled, not "the file is old" - a cache built on day 27 of
+        # a cycle is stale two days later, and one built on day 1 is current
+        # for four weeks. Comparing build age got both of those wrong.
+        "stale": bool(have) and have != expected,
+        "dtpp_cycle": meta_get(conn, "dtpp_cycle", ""),
+        "cs_edition": meta_get(conn, "cs_edition", ""),
+        "built_at": meta_get(conn, "built_at", ""),
+        "tiers": {t: have_tier(conn, t) for t in TIERS},
+        "bytes": DB_PATH.stat().st_size,
+    }
+    counts = {}
+    for table, label in (("apt", "US airports"), ("rwy", "runways"),
+                         ("frq", "frequencies"), ("chart", "charts"),
+                         ("oa_apt", "world airports")):
+        counts[label] = conn.execute(
+            "SELECT COUNT(*) c FROM %s" % table).fetchone()["c"]
+    state["counts"] = counts
+    return state
+
+
+CHART_DIR = CACHE_DIR / "charts"
+# Only the FAA chart hosts. These URLs come from our own tables, but the panel
+# hands this command whatever it was given, so the allowlist keeps a bad row
+# from turning into an arbitrary download.
+CHART_HOSTS = ("aeronav.faa.gov", "www.faa.gov", "faa.gov")
+
+
+def local_chart(url, refresh=False):
+    """Download a chart PDF once and hand back the local path.
+
+    Charts are static for the life of a 28-day cycle and the cycle is in the
+    URL, so a file that exists is a file that is current."""
+    parts = urllib.parse.urlparse(url)
+    if parts.scheme != "https" or parts.hostname not in CHART_HOSTS:
+        raise ValueError("refusing to fetch %r: not an FAA chart URL" % url)
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", parts.path.lstrip("/")) or "chart.pdf"
+    path = CHART_DIR / name
+    if path.exists() and path.stat().st_size > 0 and not refresh:
+        return path
+    CHART_DIR.mkdir(parents=True, exist_ok=True)
+    blob = Http.get(url, binary=True, timeout=120)
+    if not blob.startswith(b"%PDF"):
+        raise RuntimeError("%s did not return a PDF" % url)
+    # Write beside and rename, so a reader never sees a half-written chart.
+    tmp = path.with_suffix(path.suffix + ".part")
+    tmp.write_bytes(blob)
+    os.replace(tmp, path)
+    return path
+
+
+def cmd_pdf(args):
+    """Fetch a chart PDF for local display and print where it landed."""
+    try:
+        path = local_chart(args.url, refresh=args.refresh)
+    except Exception as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            sys.exit(1)
+        die(str(exc))
+    if args.json:
+        print(json.dumps({"ok": True, "path": str(path),
+                          "bytes": path.stat().st_size, "url": args.url}))
+    else:
+        print(path)
 
 
 def cmd_cache(args):
     if args.action == "status":
-        if not DB_PATH.exists():
+        state = cache_state()
+        if args.json:
+            print(json.dumps(state, indent=2))
+        elif not state["built"]:
             print("cache: not built. run:  apt.py cache update")
-            return
-        conn = db_connect()
-        print("cache:            %s" % DB_PATH)
-        print("NASR cycle:       %s" % meta_get(conn, "nasr_cycle", "?"))
-        print("d-TPP cycle:      %s (effective %s)" % (meta_get(conn, "dtpp_cycle", "?"),
-                                                       meta_get(conn, "dtpp_effective", "?")))
-        print("Chart Supplement: %s" % meta_get(conn, "cs_edition", "?"))
-        print("built:            %s" % meta_get(conn, "built_at", "?"))
-        for table, label in (("apt", "US airports"), ("rwy", "runways"),
-                             ("frq", "frequencies"), ("chart", "charts"),
-                             ("oa_apt", "world airports")):
-            n = conn.execute("SELECT COUNT(*) c FROM %s" % table).fetchone()["c"]
-            print("  %-16s %d" % (label + ":", n))
-        stale = cache_age_days(conn)
-        if stale is not None and stale > 28:
-            print("\nNOTE: cache is %d days old - run 'apt.py cache update'" % stale)
+        else:
+            print("cache:            %s" % state["path"])
+            print("NASR cycle:       %s" % (state["nasr_cycle"] or "?"))
+            print("d-TPP cycle:      %s" % (state["dtpp_cycle"] or "not fetched yet"))
+            print("Chart Supplement: %s" % (state["cs_edition"] or "not fetched yet"))
+            print("built:            %s" % (state["built_at"] or "?"))
+            print("size:             %.0f MB" % (state["bytes"] / 1e6))
+            for label, n in state["counts"].items():
+                print("  %-16s %d" % (label + ":", n))
+            print("  %-16s %s" % ("tiers:", ", ".join(
+                t for t in TIERS if state["tiers"].get(t)) or "none"))
+            if state["stale"]:
+                print("\nNOTE: FAA cycle rolled to %s - run 'apt.py cache update'"
+                      % state["expected_cycle"])
+        # Exit non-zero when there is nothing usable, so a shell guard like
+        # `if ! apt.py cache status; then build; fi` does the right thing.
+        if not state["built"]:
+            sys.exit(1)
+        return
+
+    PROGRESS.enabled = getattr(args, "progress", False)
+    state = cache_state()
+    if getattr(args, "if_stale", False) and state["built"] and not state["stale"]:
+        PROGRESS.finish(skipped=True)
+        log("cache is current (NASR cycle %s)" % state["nasr_cycle"])
         return
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    # The database is derived data - rebuild it rather than migrate schemas.
-    if DB_PATH.exists():
-        DB_PATH.unlink()
-    conn = db_connect(readonly=False)
+    tier_arg = getattr(args, "tier", None)
+
+    # Adding one tier to a cache that is already current is additive - the
+    # existing tables stay exactly as they are. Only a full update rebuilds.
+    if tier_arg and state["built"] and not state["stale"]:
+        conn = db_connect(readonly=False)
+        PROGRESS.begin(TIER_STEPS[tier_arg], "Fetching %s" % TIER_LABEL[tier_arg])
+        try:
+            counts = build_tier(conn, tier_arg)
+        except BaseException as exc:
+            PROGRESS.fail(str(exc))
+            raise
+        finally:
+            conn.close()
+        PROGRESS.finish(bytes=DB_PATH.stat().st_size)
+        print("added tier %s:" % tier_arg)
+        for key, value in counts.items():
+            print("  %-24s %d" % (key + ":", value))
+        return
+
+    tiers = [tier_arg] if tier_arg else list(DEFAULT_TIERS)
+    # On a full update anything already present is rebuilt too: a cache serving
+    # this cycle's runways with last cycle's approach plates would be worse than
+    # one that is simply out of date everywhere.
+    if not tier_arg:
+        tiers += [t for t in TIERS
+                  if t not in DEFAULT_TIERS and state["tiers"].get(t)]
+
+    # Build beside the live cache and swap it in at the end. Rebuilding in
+    # place meant a failed download left no cache at all, and a refresh blanked
+    # the panel for the two minutes it was running.
+    tmp = DB_PATH.with_suffix(".building")
+    if tmp.exists():
+        tmp.unlink()
+    total = sum(TIER_STEPS[t] for t in tiers)
+    PROGRESS.begin(total, "Building the airport cache")
+    conn = db_connect(readonly=False, path=tmp)
     conn.executescript(SCHEMA)
-    log("building airport cache (first run downloads ~40 MB)...")
     counts = {}
-    cycle = nasr_cycle_date()
-    counts.update(build_nasr(conn, cycle))
-    counts.update(build_dtpp(conn))
-    counts.update(build_cs(conn))
-    counts.update(build_ourairports(conn))
-    log("  ranking airports for search...")
-    compute_ranks(conn)
-    meta_set(conn, "built_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
-    conn.commit()
+    try:
+        cycle = nasr_cycle_date()
+        for tier in tiers:
+            counts.update(build_tier(conn, tier, cycle))
+        meta_set(conn, "built_at",
+                 datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        conn.commit()
+        conn.close()
+        os.replace(tmp, DB_PATH)
+    except BaseException as exc:
+        conn.close()
+        if tmp.exists():
+            tmp.unlink()
+        PROGRESS.fail(str(exc))
+        raise
+    PROGRESS.finish(cycle=cycle.isoformat(), bytes=DB_PATH.stat().st_size)
     print("cache built:")
     print("  NASR cycle %s" % cycle.isoformat())
+    print("  %-24s %.0f MB" % ("size:", DB_PATH.stat().st_size / 1e6))
     for key, value in counts.items():
         print("  %-24s %d" % (key + ":", value))
 
@@ -513,23 +889,40 @@ def compute_ranks(conn):
     """
     conn.execute("UPDATE apt SET rank = 0")
     # Longest runway is the honest baseline for how significant a field is.
+    # Blobs are positional arrays now, so these reach in by index. Both keys
+    # are in the allowlists above, which is what keeps the indexes valid.
+    len_ix = RWY_KEEP.index("RWY_LEN")
+    use_ix = APT_KEEP.index("FACILITY_USE_CODE")
     conn.execute("""
         UPDATE apt SET rank = COALESCE((
-            SELECT MAX(CAST(json_extract(rwy.data, '$.RWY_LEN') AS INTEGER))
+            SELECT MAX(CAST(json_extract(rwy.data, '$[%d]') AS INTEGER))
             FROM rwy WHERE rwy.arpt_id = apt.arpt_id), 0)
-    """)
+    """ % len_ix)
     # Airline hubs and public-use fields outrank private strips and helipads.
+    # Resolve each FAA airport to its OurAirports type once into a temp table.
+    # As a correlated subquery this was two unindexed scans of 86,032 rows per
+    # airport - 90 seconds, which was the entire cache build. The OR is what
+    # stopped an index being used, so the two matches are made separately.
+    conn.execute("CREATE INDEX IF NOT EXISTS oa_local_ix ON oa_apt(local_code)")
+    conn.execute("DROP TABLE IF EXISTS temp.oa_type")
+    conn.execute("CREATE TEMP TABLE oa_type (arpt_id TEXT PRIMARY KEY, type TEXT)")
     conn.execute("""
-        UPDATE apt SET rank = rank + CASE
-            WHEN (SELECT type FROM oa_apt WHERE oa_apt.local_code = apt.arpt_id
-                  OR oa_apt.ident = apt.icao_id) = 'large_airport'  THEN 60000
-            WHEN (SELECT type FROM oa_apt WHERE oa_apt.local_code = apt.arpt_id
-                  OR oa_apt.ident = apt.icao_id) = 'medium_airport' THEN 25000
-            ELSE 0 END
+        INSERT OR IGNORE INTO oa_type
+        SELECT apt.arpt_id, oa_apt.type FROM apt JOIN oa_apt
+          ON oa_apt.local_code = apt.arpt_id
     """)
+    conn.execute("""
+        INSERT OR IGNORE INTO oa_type
+        SELECT apt.arpt_id, oa_apt.type FROM apt JOIN oa_apt
+          ON oa_apt.ident = apt.icao_id WHERE apt.icao_id != ''
+    """)
+    for kind, boost in (("large_airport", 60000), ("medium_airport", 25000)):
+        conn.execute("UPDATE apt SET rank = rank + ? WHERE arpt_id IN "
+                     "(SELECT arpt_id FROM oa_type WHERE type = ?)", (boost, kind))
+    conn.execute("DROP TABLE temp.oa_type")
     conn.execute("UPDATE apt SET rank = rank + 4000 WHERE icao_id != ''")
     conn.execute("UPDATE apt SET rank = rank + 3000 "
-                 "WHERE json_extract(data, '$.FACILITY_USE_CODE') = 'PU'")
+                 "WHERE json_extract(data, '$[%d]') = 'PU'" % use_ix)
     conn.execute("UPDATE apt SET rank = rank - 15000 WHERE site_type != 'A'")
 
 
@@ -567,17 +960,6 @@ def split_state(conn, query):
         if len(words) > 1 and words[-1] in names:
             return " ".join(words[:-1]), names[words[-1]]
     return q, ""
-
-
-def cache_age_days(conn):
-    built = meta_get(conn, "built_at")
-    if not built:
-        return None
-    try:
-        when = datetime.fromisoformat(built)
-    except ValueError:
-        return None
-    return (datetime.now(timezone.utc) - when).days
 
 
 def cycle_note(conn):
@@ -651,7 +1033,7 @@ def resolve(conn, query):
 
 
 def us_record(conn, row):
-    data = json.loads(row["data"])
+    data = unpack_row(conn, "apt", row["data"])
     fid = row["arpt_id"]
     oa = conn.execute("SELECT * FROM oa_apt WHERE local_code=? OR ident=? OR icao=?",
                       (fid, row["icao_id"] or fid, row["icao_id"] or fid)).fetchone()
@@ -827,6 +1209,7 @@ def fmt_ft(value):
 
 def get_runways(conn, rec):
     if rec["source"] != "faa":
+        ensure_tier(conn, "world")
         rows = conn.execute("SELECT * FROM oa_rwy WHERE ident=?", (rec["id"],)).fetchall()
         out = []
         for r in rows:
@@ -848,11 +1231,12 @@ def get_runways(conn, rec):
     fid = rec["id"]
     ends_by_rwy = {}
     for r in conn.execute("SELECT * FROM rwy_end WHERE arpt_id=?", (fid,)).fetchall():
-        ends_by_rwy.setdefault(r["rwy_id"], []).append(json.loads(r["data"]))
+        ends_by_rwy.setdefault(r["rwy_id"], []).append(
+            unpack_row(conn, "rwy_end", r["data"]))
 
     out = []
     for r in conn.execute("SELECT * FROM rwy WHERE arpt_id=?", (fid,)).fetchall():
-        d = json.loads(r["data"])
+        d = unpack_row(conn, "rwy", r["data"])
         ends = []
         for e in ends_by_rwy.get(r["rwy_id"], []):
             ends.append({
@@ -915,11 +1299,31 @@ def get_freqs(conn, rec):
             "use": use,
             "facility": r["facility"],
             "fac_type": r["fac_type"],
-            "tower_hours": (r["twr_hrs"] or "").strip(),
+            "tower_hours": humanize_hours(r["twr_hrs"]),
             "remark": (r["remark"] or "").strip(),
             "uhf": bool(n and n > 200),
         })
     return out
+
+
+def display_id(rec):
+    """What to call an airport on screen.
+
+    The FAA identifier is what people say and type - ATL, POU, PDK - so it
+    leads. KATL is the ICAO form of the same field, carried alongside for
+    flight planning rather than used as the name. Outside the US, and at the
+    fields with no ICAO identifier at all, this is already the only identifier
+    there is, so nothing changes for them."""
+    return rec["id"] or rec["icao"]
+
+
+def humanize_hours(value):
+    """NASR writes round-the-clock operation as a bare "24", which next to a
+    frequency reads like a channel number rather than an opening time."""
+    text = re.sub(r"\s+", " ", (value or "").strip())
+    if re.fullmatch(r"24|24 ?HRS?|CONTINUOUS", text, re.I):
+        return "24 hours"
+    return text
 
 
 def pick_freq(freqs, *keys):
@@ -936,6 +1340,7 @@ def get_charts(conn, rec):
     if rec["source"] != "faa":
         return {"cycle": None, "charts": [], "cs": None}
     cycle = meta_get(conn, "dtpp_cycle", "")
+    ensure_tier(conn, "charts")
     rows = conn.execute(
         "SELECT * FROM chart WHERE arpt_id=? OR icao_id=?",
         (rec["id"], rec["icao"] or rec["id"])).fetchall()
@@ -1102,7 +1507,7 @@ def touch_recent(rec):
     """Record a visit. Pinned entries always sort first and never roll off."""
     entries = [e for e in read_recents() if e.get("id") != rec["id"]]
     pinned_before = next((e for e in read_recents() if e.get("id") == rec["id"]), {})
-    entries.insert(0, {"id": rec["id"], "ident": rec["icao"] or rec["id"],
+    entries.insert(0, {"id": rec["id"], "ident": display_id(rec),
                        "pinned": bool(pinned_before.get("pinned")),
                        "last": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     pinned = [e for e in entries if e.get("pinned")]
@@ -1459,13 +1864,32 @@ def wx_ident(rec):
 
 
 def fetch_twilight(lat, lon, when=None):
+    """Sunrise, sunset and civil twilight, cached per place per day.
+
+    Sun times do not change between two visits to the same airport on the same
+    day, but this was a network round trip on every single load - the one live
+    call with no cache behind it."""
+    day = when or date.today().isoformat()
+    key = "%.2f_%.2f_%s" % (lat, lon, day)
+    path = CACHE_DIR / "twilight" / (re.sub(r"[^0-9A-Za-z._-]", "_", key) + ".json")
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except ValueError:
+            pass
     try:
         url = "%s?lat=%.5f&lng=%.5f&formatted=0" % (SUNRISE_URL, lat, lon)
         if when:
             url += "&date=" + when
-        return Http.json(url, timeout=30, retries=2).get("results")
+        results = Http.json(url, timeout=30, retries=2).get("results")
     except Exception:
         return None
+    if results:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".part")
+        tmp.write_text(json.dumps(results))
+        os.replace(tmp, path)
+    return results
 
 
 def haversine_nm(lat1, lon1, lat2, lon2):
@@ -2105,7 +2529,7 @@ def cmd_resolve(args):
             print("%-5s %-5s %s, %s" % (c.get("id", ""), c.get("icao") or "",
                                         c["name"], c.get("city", "")))
         return
-    print("%s  %s  %s, %s" % (rec["icao"] or rec["id"], rec["name"], rec["city"], rec["state"]))
+    print("%s  %s  %s, %s" % (display_id(rec), rec["name"], rec["city"], rec["state"]))
 
 
 def cmd_info(args):
@@ -2124,10 +2548,10 @@ def cmd_info(args):
         return
 
     faa = rec["faa"] or {}
-    ident = rec["icao"] or rec["id"]
+    ident = display_id(rec)
     head = "%s  %s" % (ident, rec["name"])
-    if rec["id"] != ident:
-        head += "  (FAA %s)" % rec["id"]
+    if rec["icao"] and rec["icao"] != ident:
+        head += "  (ICAO %s)" % rec["icao"]
     print(head)
     print("%s, %s%s" % (rec["city"], rec["state_name"] or rec["state"],
                         "  |  " + SITE_TYPES.get(rec["site_type"], rec["site_type"] or "")
@@ -2262,7 +2686,7 @@ def cmd_runways(args):
         return
     if not runways:
         die("no runway data for %s" % rec["id"])
-    print("%s  %s\n" % (rec["icao"] or rec["id"], rec["name"]))
+    print("%s  %s\n" % (display_id(rec), rec["name"]))
     for rwy in runways:
         print("Runway %s   %s x %s   %s%s" % (
             rwy["id"], fmt_ft(rwy["length"]), fmt_ft(rwy["width"]),
@@ -2311,7 +2735,7 @@ def cmd_freqs(args):
         return
     if not freqs:
         die("no FAA frequency data for %s" % rec["id"])
-    print("%s  %s\n" % (rec["icao"] or rec["id"], rec["name"]))
+    print("%s  %s\n" % (display_id(rec), rec["name"]))
     seen = set()
     for f in freqs:
         if f["uhf"] and not args.all:
@@ -2342,7 +2766,7 @@ def cmd_charts(args):
             msg += "\nChart Supplement: %s" % charts["cs"]
         print(msg)
         return
-    print("%s  %s   d-TPP cycle %s\n" % (rec["icao"] or rec["id"], rec["name"], charts["cycle"]))
+    print("%s  %s   d-TPP cycle %s\n" % (display_id(rec), rec["name"], charts["cycle"]))
     labels = {"APD": "Airport diagram", "HOT": "Hot spots", "IAP": "Approach",
               "DP": "Departure", "STR": "Arrival", "ODP": "Obstacle departure",
               "MIN": "Takeoff/alternate minimums", "LAH": "LAHSO", "DAU": "Diverse vector"}
@@ -2373,17 +2797,17 @@ def cmd_procedures(args):
 
     if rec["source"] != "faa":
         die("terminal procedures are FAA products; %s is outside FAA coverage. "
-            "Try the national AIP for that country." % (rec["icao"] or rec["id"]))
+            "Try the national AIP for that country." % (display_id(rec)))
 
     total = sum(len(procs[b]) for b in PROC_KINDS.values() if b in procs)
     if not total:
-        print("%s  %s\n" % (rec["icao"] or rec["id"], rec["name"]))
+        print("%s  %s\n" % (display_id(rec), rec["name"]))
         print("No FAA terminal procedures published - this is a VFR-only field.")
         if procs.get("cs"):
             print("Chart Supplement: %s" % procs["cs"])
         return
 
-    print("%s  %s" % (rec["icao"] or rec["id"], rec["name"]))
+    print("%s  %s" % (display_id(rec), rec["name"]))
     print("d-TPP cycle %s, effective %s through %s\n"
           % (procs["cycle"], procs.get("effective", "?"), procs.get("expires", "?")))
 
@@ -2453,7 +2877,7 @@ def cmd_wx(args):
                           "taf": taf, "twilight": twilight}, indent=2, default=str))
         return
 
-    print("%s  %s\n" % (rec["icao"] or rec["id"], rec["name"]))
+    print("%s  %s\n" % (display_id(rec), rec["name"]))
     if not metar:
         print("No METAR published for %s (many small fields have no weather station)." % station)
     elif "error" in metar:
@@ -2531,7 +2955,7 @@ def cmd_tfr(args):
 
     if rec:
         print("Active TFRs near %s (%s, within %s nm where geometry is published)\n"
-              % (rec["icao"] or rec["id"], state or "?", args.radius))
+              % (display_id(rec), state or "?", args.radius))
     if not results:
         print("None found.")
     for tfr in results:
@@ -2579,7 +3003,7 @@ def cmd_amenities(args):
 
     if data.get("error"):
         die("OpenStreetMap lookup failed: %s" % data["error"])
-    print("%s  %s\n" % (rec["icao"] or rec["id"], rec["name"]))
+    print("%s  %s\n" % (display_id(rec), rec["name"]))
     if data.get("stale"):
         print("(serving cached data; Overpass was unreachable)\n")
     if warn:
@@ -2672,7 +3096,7 @@ def longest_runway(conn, arpt_id):
     best = 0
     surface = ""
     for r in row:
-        d = json.loads(r["data"])
+        d = unpack_row(conn, "rwy", r["data"])
         n = _fnum(d.get("RWY_LEN")) or 0
         if n > best:
             best = n
@@ -2694,7 +3118,7 @@ def cmd_nearby(args):
             continue
         if not args.all and r["site_type"] != "A":
             continue  # heliports and hospital pads crowd out real destinations
-        faa = json.loads(r["data"])
+        faa = unpack_row(conn, "apt", r["data"])
         if not args.all and faa.get("FACILITY_USE_CODE") == "PR":
             continue
         dist = haversine_nm(rec["lat"], rec["lon"], r["lat"], r["lon"])
@@ -2717,7 +3141,7 @@ def cmd_nearby(args):
         print(json.dumps({"from": rec, "airports": out}, indent=2, default=str))
         return
     print("Airports within %g nm of %s%s\n" % (
-        args.radius, rec["icao"] or rec["id"],
+        args.radius, display_id(rec),
         "  (public-use airports only; --all to include heliports and private fields)"
         if not args.all else ""))
     for a in out:
@@ -2749,7 +3173,7 @@ def cmd_fbo(args):
     if data.get("error"):
         die("AirNav unavailable: %s" % data["error"])
     fbos = data.get("fbos", [])
-    print("%s  %s\n" % (rec["icao"] or rec["id"], title_case(rec["name"])))
+    print("%s  %s\n" % (display_id(rec), title_case(rec["name"])))
     if not fbos:
         print("No FBOs listed on AirNav for this field.")
     for f in fbos:
@@ -2795,7 +3219,7 @@ def cmd_search(args):
         if source == "faa":
             results.append({
                 "id": row["arpt_id"], "icao": row["icao_id"] or "",
-                "ident": row["icao_id"] or row["arpt_id"],
+                "ident": row["arpt_id"] or row["icao_id"],
                 "name": title_case(row["name"]), "city": title_case(row["city"]),
                 "state": row["state"], "elev": row["elev"],
                 "site_type": SITE_TYPES.get(row["site_type"], ""), "us": True})
@@ -2879,7 +3303,7 @@ def cmd_recents(args):
                     e["pinned"] = args.action == "pin"
                     found = True
             if not found and args.action == "pin":
-                entries.insert(0, {"id": rec["id"], "ident": rec["icao"] or rec["id"],
+                entries.insert(0, {"id": rec["id"], "ident": display_id(rec),
                                    "pinned": True,
                                    "last": datetime.now(timezone.utc).isoformat(
                                        timespec="seconds")})
@@ -2902,6 +3326,469 @@ def cmd_recents(args):
                                     e["name"][:32], e.get("last", "")[:10]))
 
 
+# --------------------------------------------------------------------------
+# TAF outlook
+#
+# The forecast is already downloaded for every airport - it arrives with the
+# METAR - but it was only ever shown as the raw bulletin. Parsed, it is the one
+# genuinely predictive thing here: when the field is expected to go IFR, when
+# the thunderstorms are due, and how long the wind stays where it is. Both
+# audiences want it, for different reasons.
+# --------------------------------------------------------------------------
+
+TAF_WX = {
+    "TS": "thunderstorms", "TSRA": "thunderstorms with rain",
+    "SHRA": "rain showers", "SHSN": "snow showers", "FZRA": "freezing rain",
+    "FZDZ": "freezing drizzle", "FZFG": "freezing fog", "BLSN": "blowing snow",
+    "MIFG": "shallow fog", "RA": "rain", "SN": "snow", "DZ": "drizzle",
+    "FG": "fog", "BR": "mist", "HZ": "haze", "GR": "hail", "GS": "small hail",
+    "PL": "ice pellets", "SG": "snow grains", "SQ": "squalls",
+    "FC": "funnel cloud", "SS": "sandstorm", "DS": "duststorm",
+    "IC": "ice crystals", "UP": "unknown precipitation",
+}
+
+
+def _taf_time(day, hour, ref):
+    """A TAF gives day-of-month and hour with no month. Pick the reading
+    closest to when the bulletin was issued."""
+    extra, hour = (1, hour - 24) if hour >= 24 else (0, hour)
+    out = []
+    for delta in (0, -1, 1):
+        month = ref.month + delta
+        year = ref.year + (1 if month > 12 else (-1 if month < 1 else 0))
+        month = (month - 1) % 12 + 1
+        try:
+            out.append(datetime(year, month, day, hour, tzinfo=timezone.utc)
+                       + timedelta(days=extra))
+        except ValueError:
+            continue
+    return min(out, key=lambda d: abs((d - ref).total_seconds())) if out else None
+
+
+def _taf_visibility(tokens, i):
+    """Visibility in statute miles, and how many tokens it consumed."""
+    tok = tokens[i]
+    if tok == "CAVOK":
+        return 10.0, 1
+    # "1 1/2SM" arrives as two tokens.
+    if re.fullmatch(r"\d", tok) and i + 1 < len(tokens) \
+            and re.fullmatch(r"\d/\dSM", tokens[i + 1]):
+        whole = float(tok)
+        num, den = tokens[i + 1][:-2].split("/")
+        return whole + float(num) / float(den), 2
+    m = re.fullmatch(r"([PM])?(\d+)(?:/(\d+))?SM", tok)
+    if not m:
+        return None, 0
+    value = float(m.group(2)) / float(m.group(3)) if m.group(3) else float(m.group(2))
+    # P6SM is "more than six miles", i.e. unrestricted - not a six-mile
+    # restriction worth reporting on every line of the outlook.
+    if m.group(1) == "P":
+        value = max(value, 10.0)
+    return value, 1
+
+
+def _taf_category(vis_sm, ceiling_ft):
+    """Standard FAA thresholds, worst of visibility and ceiling."""
+    vis = 99.0 if vis_sm is None else vis_sm
+    ceil = 99999 if ceiling_ft is None else ceiling_ft
+    if vis < 1 or ceil < 500:
+        return "LIFR"
+    if vis < 3 or ceil < 1000:
+        return "IFR"
+    if vis <= 5 or ceil <= 3000:
+        return "MVFR"
+    return "VFR"
+
+
+def _taf_group(tokens):
+    """Wind, visibility, weather and cloud out of one forecast group."""
+    wind, vis, ceiling, sky, wx = "", None, None, [], []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        m = re.fullmatch(r"(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?KT", tok)
+        if m:
+            if int(m.group(2)) == 0:
+                wind = "calm"
+            elif m.group(1) == "VRB":
+                wind = "variable at %s kt" % int(m.group(2))
+            else:
+                wind = "%s (%s\u00b0) at %s kt" % (compass(m.group(1)),
+                                                   int(m.group(1)), int(m.group(2)))
+            if m.group(3) and wind != "calm":
+                wind += " gusting %s" % int(m.group(3))
+            i += 1
+            continue
+        value, used = _taf_visibility(tokens, i)
+        if used:
+            vis = value
+            i += used
+            continue
+        m = re.fullmatch(r"(FEW|SCT|BKN|OVC)(\d{3})(CB|TCU)?", tok)
+        if m:
+            height = int(m.group(2)) * 100
+            sky.append("%s at %s ft" % (COVER_TEXT.get(m.group(1), m.group(1).lower()),
+                                        format(height, ",")))
+            if m.group(1) in ("BKN", "OVC") and (ceiling is None or height < ceiling):
+                ceiling = height
+            i += 1
+            continue
+        if re.fullmatch(r"VV(\d{3})", tok):
+            height = int(tok[2:]) * 100
+            sky.append("sky obscured, vertical visibility %s ft" % format(height, ","))
+            ceiling = height if ceiling is None else min(ceiling, height)
+            i += 1
+            continue
+        if tok in ("SKC", "CLR", "NSC", "NCD", "CAVOK"):
+            sky.append("clear")
+            i += 1
+            continue
+        m = re.fullmatch(r"([-+]?)(VC)?([A-Z]{2,6})", tok)
+        if m and m.group(3) in TAF_WX:
+            prefix = {"-": "light ", "+": "heavy "}.get(m.group(1), "")
+            if m.group(2):
+                prefix = "nearby "
+            wx.append(prefix + TAF_WX[m.group(3)])
+        i += 1
+    return {"wind": wind, "visibility_sm": vis, "ceiling_ft": ceiling,
+            "sky": ", ".join(sky), "weather": ", ".join(wx),
+            "category": _taf_category(vis, ceiling)}
+
+
+def parse_taf(raw, now=None):
+    """A raw TAF as an ordered outlook.
+
+    The main timeline is the initial group plus each FM change, each running
+    until the next one. TEMPO, BECMG and PROB groups are overlays on that
+    timeline, not slices of it, so they are kept apart."""
+    if not raw or not isinstance(raw, str):
+        return None
+    text = " ".join(raw.split())
+    ref = now or datetime.now(timezone.utc)
+    issued = re.search(r"\b(\d{2})(\d{2})(\d{2})Z\b", text)
+    if issued:
+        at = _taf_time(int(issued.group(1)), int(issued.group(2)), ref)
+        if at:
+            ref = at
+    valid = re.search(r"\b(\d{2})(\d{2})/(\d{2})(\d{2})\b", text)
+    if not valid:
+        return None
+    start = _taf_time(int(valid.group(1)), int(valid.group(2)), ref)
+    end = _taf_time(int(valid.group(3)), int(valid.group(4)), ref)
+    if not start or not end:
+        return None
+    if end <= start:
+        end += timedelta(days=1)
+
+    body = text[valid.end():]
+    # Split into groups, keeping the marker that begins each.
+    marks = list(re.finditer(r"\b(FM\d{6}|TEMPO|BECMG|PROB\d{2})\b", body))
+    chunks = [("BASE", body[:marks[0].start()] if marks else body)]
+    for n, mark in enumerate(marks):
+        stop = marks[n + 1].start() if n + 1 < len(marks) else len(body)
+        chunks.append((mark.group(1), body[mark.end():stop]))
+
+    timeline, overlays, pending_prob = [], [], None
+    for kind, chunk in chunks:
+        tokens = chunk.split()
+        if kind.startswith("PROB"):
+            pending_prob = int(kind[4:])
+            # "PROB30 TEMPO 0522/0602 ..." - the TEMPO is the next marker, so
+            # remember the probability and attach it there.
+            if not tokens:
+                continue
+        window = None
+        if kind in ("TEMPO", "BECMG") or kind.startswith("PROB"):
+            m = re.match(r"\s*(\d{2})(\d{2})/(\d{2})(\d{2})", chunk)
+            if m:
+                window = (_taf_time(int(m.group(1)), int(m.group(2)), start),
+                          _taf_time(int(m.group(3)), int(m.group(4)), start))
+                tokens = chunk[m.end():].split()
+        group = _taf_group(tokens)
+        if kind == "BASE":
+            group.update({"from": start, "to": end, "kind": "base"})
+            timeline.append(group)
+        elif kind.startswith("FM"):
+            at = _taf_time(int(kind[2:4]), int(kind[4:6]), start)
+            if not at:
+                continue
+            group.update({"from": at, "to": end, "kind": "from"})
+            if timeline:
+                timeline[-1]["to"] = at
+            timeline.append(group)
+        else:
+            if not window or not window[0] or not window[1]:
+                continue
+            group.update({"from": window[0], "to": window[1],
+                          "kind": kind.lower() if not kind.startswith("PROB") else "prob",
+                          "probability": pending_prob if kind != "BECMG" else None})
+            if kind == "TEMPO" and pending_prob:
+                group["probability"] = pending_prob
+            overlays.append(group)
+            if kind != "TEMPO":
+                pending_prob = None
+            else:
+                pending_prob = None
+
+    def clean(g):
+        out = {k: v for k, v in g.items() if k not in ("from", "to")}
+        out["from"] = g["from"].isoformat()
+        out["to"] = g["to"].isoformat()
+        out["summary"] = taf_group_summary(g)
+        return out
+
+    # A TAF whose first FM lands on the start of the valid period leaves the
+    # initial group with no duration at all; it is not a forecast period.
+    timeline = [g for g in timeline if g["to"] > g["from"]]
+    return {"valid_from": start.isoformat(), "valid_to": end.isoformat(),
+            "timeline": [clean(g) for g in timeline],
+            "overlays": [clean(g) for g in overlays]}
+
+
+def taf_group_summary(group):
+    """One line a traveller can read, for one forecast period."""
+    bits = []
+    if group.get("weather"):
+        bits.append(group["weather"])
+    if group.get("sky"):
+        bits.append(group["sky"])
+    if group.get("visibility_sm") is not None and group["visibility_sm"] < 7:
+        bits.append("visibility %s"
+                    % ("%g miles" % group["visibility_sm"]
+                       if group["visibility_sm"] >= 1
+                       else "%g mile" % group["visibility_sm"]))
+    if group.get("wind"):
+        bits.append("wind %s" % group["wind"])
+    return ", ".join(bits) or "no significant change"
+
+
+# --------------------------------------------------------------------------
+# FAA national airspace status
+#
+# One small XML file - under 2 KB - covering every airport the FAA is currently
+# reporting a problem at: ground delay programs, ground stops, arrival and
+# departure delays, and field closures. Because it is national and tiny, it is
+# fetched once and cached, not fetched per airport.
+#
+# This is delays and closures, not NOTAMs. It says nothing about an airport it
+# does not list, and neither does this code.
+# --------------------------------------------------------------------------
+
+NAS_STATUS_URL = "https://nasstatus.faa.gov/api/airport-status-information"
+NAS_STATUS_TTL = 300
+NAS_CACHE = CACHE_DIR / "nas_status.json"
+
+
+def _nas_parse(xml):
+    root = ET.fromstring(xml)
+    out = {}
+
+    def add(code, entry):
+        if code:
+            out.setdefault(code.strip().upper(), []).append(entry)
+
+    for group in root.findall("Delay_type"):
+        name = (group.findtext("Name") or "").strip()
+        for gd in group.iter("Ground_Delay"):
+            add(gd.findtext("ARPT"), {
+                "kind": "ground_delay", "label": "Ground delay program",
+                "reason": (gd.findtext("Reason") or "").strip(),
+                "detail": "average %s, up to %s" % ((gd.findtext("Avg") or "?").strip(),
+                                                    (gd.findtext("Max") or "?").strip()),
+            })
+        # Ground stops are absent from the feed whenever none are running, so
+        # this branch is usually dead - which is exactly when it must not break.
+        for gs in group.iter("Program"):
+            add(gs.findtext("ARPT"), {
+                "kind": "ground_stop", "label": "Ground stop",
+                "reason": (gs.findtext("Reason") or "").strip(),
+                "detail": ("until %s" % gs.findtext("End_Time").strip())
+                          if gs.findtext("End_Time") else "",
+            })
+        for d in group.iter("Delay"):
+            ad = d.find("Arrival_Departure")
+            kind = (ad.get("Type") or "").strip().lower() if ad is not None else ""
+            detail = ""
+            if ad is not None:
+                span = "%s to %s" % ((ad.findtext("Min") or "?").strip(),
+                                     (ad.findtext("Max") or "?").strip())
+                trend = (ad.findtext("Trend") or "").strip()
+                detail = span + (", %s" % trend.lower() if trend else "")
+            add(d.findtext("ARPT"), {
+                "kind": "delay",
+                "label": "%s delays" % (kind.capitalize() or "General"),
+                "reason": (d.findtext("Reason") or "").strip(),
+                "detail": detail,
+            })
+        for c in group.iter("Airport"):
+            if c.findtext("ARPT") is None:
+                continue
+            reopen = (c.findtext("Reopen") or "").strip().rstrip(".")
+            add(c.findtext("ARPT"), {
+                "kind": "closure", "label": "Airport closure",
+                "reason": (c.findtext("Reason") or "").strip(),
+                "detail": ("reopens %s" % reopen) if reopen else "",
+            })
+        if name and not out:
+            continue
+    return out
+
+
+def fetch_nas_status(refresh=False):
+    """The whole national picture, cached. Returns None if it cannot be had."""
+    _load_build_modules()
+    try:
+        age = time.time() - NAS_CACHE.stat().st_mtime
+        if age < NAS_STATUS_TTL and not refresh:
+            return json.loads(NAS_CACHE.read_text())
+    except (OSError, ValueError):
+        pass
+    try:
+        xml = Http.get(NAS_STATUS_URL, timeout=30, retries=2)
+        data = {"updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "airports": _nas_parse(xml)}
+    except Exception:
+        # Serve a stale copy rather than nothing; the FAA being unreachable is
+        # not evidence that an airport is running normally.
+        try:
+            return json.loads(NAS_CACHE.read_text())
+        except (OSError, ValueError):
+            return None
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = NAS_CACHE.with_suffix(".part")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, NAS_CACHE)
+    return data
+
+
+def airport_status(rec):
+    """FAA-reported delays and closures for one airport.
+
+    available=False means the feed could not be read - which is not the same as
+    an airport with nothing wrong, and must not be shown as one."""
+    if rec["source"] != "faa":
+        return {"available": False, "items": [], "us": False}
+    data = fetch_nas_status()
+    if not data:
+        return {"available": False, "items": [], "us": True}
+    # The feed keys on the three-letter code; try every name this field has.
+    icao = (rec["icao"] or "").upper()
+    keys = {(rec["id"] or "").upper(), (rec["iata"] or "").upper(),
+            icao[1:] if len(icao) == 4 and icao.startswith("K") else ""}
+    items = []
+    for key in sorted(k for k in keys if k):
+        for entry in data["airports"].get(key, []):
+            if entry not in items:
+                items.append(entry)
+    return {"available": True, "items": items, "us": True,
+            "updated": data.get("updated", "")}
+
+
+def cmd_outlook(args):
+    """The forecast as a timeline rather than a bulletin."""
+    conn = db_connect()
+    rec = need_airport(conn, args.airport)
+    taf = fetch_taf_cached(wx_ident(rec))
+    raw = taf.get("rawTAF") if isinstance(taf, dict) else taf
+    outlook = parse_taf(raw)
+    if args.json:
+        print(json.dumps(outlook or {}, indent=2))
+        return
+    if not outlook:
+        die("no forecast published for %s" % display_id(rec))
+    print("%s  %s" % (display_id(rec), rec["name"]))
+    print("Forecast %s to %sZ\n" % (outlook["valid_from"][5:16].replace("T", " "),
+                                    outlook["valid_to"][11:16]))
+    for g in outlook["timeline"]:
+        print("  %s-%sZ  %-5s  %s" % (g["from"][11:16], g["to"][11:16],
+                                      g["category"], g["summary"]))
+    for g in outlook["overlays"]:
+        tag = "" if g["kind"] == "prob" else g["kind"].upper()
+        if g.get("probability"):
+            tag = ("PROB%d %s" % (g["probability"], tag)).strip()
+        print("\n  %s %s-%sZ  %-5s  %s" % (tag, g["from"][11:16], g["to"][11:16],
+                                           g["category"], g["summary"]))
+    print("\n%s" % NOT_FOR_NAV if "NOT_FOR_NAV" in globals() else "")
+
+
+def cmd_status(args):
+    """What the FAA is reporting, for one airport or nationally."""
+    if args.airport:
+        conn = db_connect()
+        rec = need_airport(conn, args.airport)
+        result = airport_status(rec)
+        if args.json:
+            print(json.dumps(result, indent=2))
+            return
+        if not result["available"]:
+            print("FAA status unavailable%s."
+                  % ("" if result.get("us") else " outside the US"))
+            return
+        print("%s  %s" % (display_id(rec), rec["name"]))
+        if not result["items"]:
+            print("\nNo delays or closures reported by the FAA.")
+        for item in result["items"]:
+            print("\n%s%s" % (item["label"],
+                              "  (%s)" % item["detail"] if item["detail"] else ""))
+            if item["reason"]:
+                print("  %s" % item["reason"])
+        return
+
+    data = fetch_nas_status(refresh=args.refresh)
+    if not data:
+        die("could not reach the FAA status feed")
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+    airports = data["airports"]
+    if not airports:
+        print("No delays or closures reported anywhere.")
+    for code in sorted(airports):
+        for item in airports[code]:
+            print("%-5s %-22s %s" % (code, item["label"],
+                                     item["detail"] or item["reason"][:60]))
+
+
+def live_weather(rec, offline=False):
+    """The network half of an airport: conditions and sun times."""
+    if offline:
+        # Not fetched yet - which is not the same claim as "this airport has
+        # no weather station", and must not render as one while the panel is
+        # still waiting on the fetch.
+        return {"available": False, "pending": True}
+    station = wx_ident(rec)
+    metar = None if offline else fetch_metar_cached(station)
+    taf = None if offline else fetch_taf_cached(station)
+    weather = humanize_weather(metar, taf, rec["elev"])
+    if not offline and rec["lat"] is not None:
+        twilight = fetch_twilight(rec["lat"], rec["lon"])
+        if twilight:
+            weather["twilight"] = "%sZ - %sZ" % (twilight["civil_twilight_begin"][11:16],
+                                                 twilight["civil_twilight_end"][11:16])
+            weather["sunrise"] = twilight["sunrise"][11:16] + "Z"
+            weather["sunset"] = twilight["sunset"][11:16] + "Z"
+    outlook = parse_taf(weather.get("taf"))
+    if outlook:
+        weather["outlook"] = outlook
+    return weather
+
+
+def cmd_live(args):
+    """Just the parts of an airport that need the network.
+
+    The panel draws the local record first - that is the fast, always-available
+    half - and folds this in when it arrives, so stepping through a list of
+    airports never waits on aviationweather.gov."""
+    conn = db_connect()
+    rec = need_airport(conn, args.airport)
+    print(json.dumps({
+        "ident": display_id(rec),
+        "weather": live_weather(rec),
+        "tfr": tfrs_for_state(rec["state"]),
+        "status": airport_status(rec),
+    }, default=str))
+
+
 def cmd_panel(args):
     """One payload for the desktop panel. Everything local plus weather;
     amenities and FBO stay out because they are slow network calls the panel
@@ -2914,17 +3801,7 @@ def cmd_panel(args):
     runways = get_runways(conn, rec)
     freqs = get_freqs(conn, rec)
     faa = rec["faa"] or {}
-    station = wx_ident(rec)
-    metar = None if args.no_live else fetch_metar_cached(station)
-    taf = None if args.no_live else fetch_taf_cached(station)
-    weather = humanize_weather(metar, taf, rec["elev"])
-    if not args.no_live and rec["lat"] is not None:
-        twilight = fetch_twilight(rec["lat"], rec["lon"])
-        if twilight:
-            weather["twilight"] = "%sZ - %sZ" % (twilight["civil_twilight_begin"][11:16],
-                                                 twilight["civil_twilight_end"][11:16])
-            weather["sunrise"] = twilight["sunrise"][11:16] + "Z"
-            weather["sunset"] = twilight["sunset"][11:16] + "Z"
+    weather = live_weather(rec, offline=args.no_live)
     field_freqs, approach_freqs, other_freqs = split_frequencies(freqs)
 
     longest = runways[0] if runways else None
@@ -2944,14 +3821,12 @@ def cmd_panel(args):
     diagram = (procedures.get("airport_diagram") or [{}])[0].get("url", "")
     airspace = get_airspace(conn, rec)
     towered = bool(twr) or (faa.get("TWR_TYPE_CODE", "").startswith("ATCT"))
-    tower_hours = re.sub(r"\s+", " ", twr["tower_hours"]) if twr and twr["tower_hours"] else ""
-    if re.fullmatch(r"24|24 HR|CONTINUOUS", tower_hours.strip(), re.I):
-        tower_hours = "24 hours"
+    tower_hours = twr["tower_hours"] if twr else ""
 
     payload = {
         "header": {
-            "ident": rec["icao"] or rec["id"],
-            "faa_id": rec["id"],
+            "ident": display_id(rec),
+            "icao": rec["icao"] if rec["icao"] != display_id(rec) else "",
             "name": title_case(rec["name"]),
             "where": where,
             "elev": rec["elev"],
@@ -3080,6 +3955,13 @@ def main(argv=None):
 
     sp = sub.add_parser("cache", help="build or inspect the local data cache")
     sp.add_argument("action", choices=["update", "status"])
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--tier", choices=list(TIERS),
+                    help="build just this tier (default: core, plus any already present)")
+    sp.add_argument("--progress", action="store_true",
+                    help="report each step as a JSON line on stdout")
+    sp.add_argument("--if-stale", dest="if_stale", action="store_true",
+                    help="do nothing unless the FAA cycle has rolled")
     sp.set_defaults(func=cmd_cache)
 
     sp = sub.add_parser("resolve", help="resolve an identifier or name")
@@ -3180,6 +4062,27 @@ def main(argv=None):
     sp.add_argument("--refresh", action="store_true", help="bypass the 24h cache")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_fbo)
+
+    sp = sub.add_parser("outlook", help="the TAF as a readable timeline")
+    sp.add_argument("airport")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_outlook)
+
+    sp = sub.add_parser("status", help="FAA-reported delays and closures")
+    sp.add_argument("airport", nargs="?")
+    sp.add_argument("--refresh", action="store_true")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_status)
+
+    sp = sub.add_parser("live", help="the network-only half of an airport, JSON out")
+    sp.add_argument("airport")
+    sp.set_defaults(func=cmd_live)
+
+    sp = sub.add_parser("pdf", help="download a chart PDF and print its local path")
+    sp.add_argument("url")
+    sp.add_argument("--refresh", action="store_true")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_pdf)
 
     sp = sub.add_parser("search", help="type-ahead airport search, JSON out")
     sp.add_argument("query")

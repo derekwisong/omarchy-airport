@@ -2,6 +2,8 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
+import QtQuick.Pdf
+import Qt5Compat.GraphicalEffects
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -30,6 +32,8 @@ Item {
   // property of that name is shadowed and reads back as the child list.
   property var airportData: null
   property string loadingIdent: ""
+  // The local record renders on its own; conditions and TFRs arrive after.
+  property bool liveLoading: false
   property bool showBusy: false
   property string currentIdent: ""   // what is loaded and displayed
   property string selectedIdent: ""  // what the highlight is on, may be ahead
@@ -39,6 +43,38 @@ Item {
   property bool fboLoading: false
   property var amenities: null
   property bool amenitiesLoading: false
+
+  // Cache state. The engine keeps one 28-day FAA cycle in SQLite; the first
+  // run has to fetch it, and every 28 days it has to fetch it again. Rather
+  // than fail blank when it is missing, the panel builds it and says so.
+  property bool cacheChecked: false
+  property bool cacheReady: false
+  property bool cacheBuilding: false
+  property bool cacheRefreshing: false   // rebuilding under a usable cache
+  property int buildStep: 0
+  property int buildTotal: 0
+  property string buildLabel: ""
+  property string buildError: ""
+  property string buildStderr: ""
+  property string expectedCycle: ""
+
+  // Chart viewing. Approach plates and airport diagrams are the reason a pilot
+  // opens this panel, and handing them to an external viewer closed the panel
+  // to show them - losing the airport, the tab and the search behind it.
+  property bool chartOpen: false
+  property bool chartLoading: false
+  property string chartPath: ""
+  property string chartUrl: ""
+  property string chartTitle: ""
+  property string chartError: ""
+  property int chartPage: 0
+  property real chartZoom: 1.0
+  // Charts are ink on paper, so the page is drawn on its own white sheet
+  // rather than on the panel's dark card. Inverting is offered because a white
+  // sheet at night is its own problem; it stays off unless asked for, and
+  // holds for the session once set.
+  property bool chartInvert: false
+  readonly property real buildFraction: buildTotal > 0 ? buildStep / buildTotal : 0
   property string amenityFilter: ""
   property string amenityTerminal: ""
 
@@ -53,7 +89,7 @@ Item {
     root.query = ""
     root.results = []
     root.tab = 0
-    loadRecents()
+    checkCache()
     Qt.callLater(function () { input.forceActiveFocus() })
   }
 
@@ -62,6 +98,86 @@ Item {
   }
 
   function toggle() { root.opened ? root.close() : root.open() }
+
+  // ---- the cache ----------------------------------------------------------
+
+  // Asking costs nothing: status is a meta read plus 28-day arithmetic, no
+  // network, so it is safe on every open.
+  function checkCache() {
+    if (cacheStatusProcess.running) return
+    cacheStatusProcess.running = true
+  }
+
+  function applyCacheStatus(text) {
+    var state = null
+    try { state = JSON.parse(String(text || "{}")) } catch (e) { state = null }
+    root.cacheChecked = true
+    if (!state) { root.cacheReady = false; startBuild(false); return }
+
+    root.cacheReady = !!state.built
+    root.expectedCycle = state.expected_cycle || ""
+    if (!state.built) {
+      startBuild(false)
+    } else {
+      loadRecents()
+      // The cycle rolled. The cache still works, so refresh it underneath the
+      // user rather than making them wait for data they already have.
+      if (state.stale) startBuild(true)
+    }
+  }
+
+  function startBuild(background) {
+    if (root.cacheBuilding) return
+    root.cacheBuilding = true
+    root.cacheRefreshing = background
+    root.buildStep = 0
+    root.buildTotal = 0
+    root.buildLabel = background ? "Checking for new FAA data" : "Starting"
+    root.buildError = ""
+    root.buildStderr = ""
+    buildProcess.command = ["python3", root.engine, "cache", "update", "--progress"]
+    buildProcess.running = true
+  }
+
+  function applyBuildEvent(line) {
+    var e = null
+    try { e = JSON.parse(String(line || "")) } catch (err) { return }
+    if (e.event === "begin") {
+      root.buildTotal = e.total || 0
+      if (e.label) root.buildLabel = e.label
+    } else if (e.event === "step") {
+      root.buildStep = e.step || 0
+      root.buildTotal = e.total || root.buildTotal
+      root.buildLabel = e.label || root.buildLabel
+    } else if (e.event === "error") {
+      root.buildError = e.message || "the build failed"
+    }
+  }
+
+  function finishBuild(code) {
+    root.cacheBuilding = false
+    if (code === 0) {
+      root.buildStep = root.buildTotal
+      root.cacheReady = true
+      root.buildError = ""
+      loadRecents()
+      // A refresh replaced the data under a loaded airport - reload it so the
+      // page reflects the new cycle rather than the one it was rendered from.
+      if (root.cacheRefreshing && root.currentIdent) {
+        var ident = root.currentIdent
+        root.currentIdent = ""
+        select(ident)
+      }
+      root.cacheRefreshing = false
+    } else if (!root.cacheRefreshing) {
+      root.buildError = root.buildError || root.buildStderr
+        || "the data build failed - check the network and try again"
+    } else {
+      // A failed background refresh is not the user's problem: the cache they
+      // already have still works, and the next open tries again.
+      root.cacheRefreshing = false
+    }
+  }
 
   // ---- data plumbing ------------------------------------------------------
 
@@ -107,6 +223,46 @@ Item {
       root.selectedIdent = root.results[0].ident || root.results[0].id
   }
 
+  function loadLive(ident) {
+    if (!ident) return
+    root.liveLoading = true
+    if (liveProcess.running) liveProcess.running = false
+    liveProcess.command = ["python3", root.engine, "live", ident]
+    liveProcess.running = true
+  }
+
+  function applyLive(text) {
+    var live = null
+    try { live = JSON.parse(String(text || "{}")) } catch (e) { live = null }
+    root.liveLoading = false
+    if (!live || !root.airportData) return
+    // Arrowing on while this was in flight means the answer is for an airport
+    // that is no longer on screen. Drop it rather than showing ATL's weather
+    // under POU's name.
+    if (live.ident && live.ident !== root.currentIdent) return
+    var next = {}
+    for (var key in root.airportData) next[key] = root.airportData[key]
+    if (live.tfr) next.tfr = live.tfr
+    if (live.status) next.status = live.status
+    if (live.weather) {
+      next.weather = live.weather
+      // The header and the Summary carry their own copies of the conditions
+      // line and the flight category - the engine derives them when it builds
+      // the payload, so merging the weather alone leaves both blank.
+      var header = {}
+      for (var h in next.header) header[h] = next.header[h]
+      header.conditions = live.weather.summary || ""
+      header.category = live.weather.category || ""
+      next.header = header
+
+      var summary = {}
+      for (var s in next.summary) summary[s] = next.summary[s]
+      summary.weather = live.weather.summary || ""
+      next.summary = summary
+    }
+    root.airportData = next
+  }
+
   function select(ident) {
     if (!ident || ident === root.loadingIdent) return
     loadDebounce.stop()
@@ -117,7 +273,11 @@ Item {
     root.amenityFilter = ""
     root.amenityTerminal = ""
     if (panelProcess.running) panelProcess.running = false
-    panelProcess.command = ["python3", root.engine, "panel", ident, "--no-record"]
+    // Local data only. Weather is a network call that costs 300-1300ms on a
+    // cold cache, and waiting for it made every step of an arrow-key walk
+    // through the rail pause on aviationweather.gov.
+    panelProcess.command = ["python3", root.engine, "panel", ident,
+                            "--no-record", "--no-live"]
     panelProcess.running = true
   }
 
@@ -128,6 +288,7 @@ Item {
         root.airportData = parsed
         root.currentIdent = parsed.header.ident
         root.selectedIdent = parsed.header.ident
+        loadLive(parsed.header.ident)
         if (root.tab === root.tabAmenities || root.tab === root.tabGround)
           ensureGroundData()
       }
@@ -172,7 +333,77 @@ Item {
     root.tab = next
   }
 
-  function openLink(url) { if (url) Qt.openUrlExternally(url) }
+  // FAA charts open here; everything else is somebody else's website and
+  // belongs in a browser.
+  function openLink(url) {
+    if (!url) return
+    var text = String(url)
+    if (/^https:\/\/[a-z.]*faa\.gov\/.*\.pdf$/i.test(text)) openChart(text)
+    else Qt.openUrlExternally(text)
+  }
+
+  // The panel already knows what each chart is called - the same name the row
+  // was rendered with - so title the viewer with that rather than a filename.
+  function chartTitleFor(url) {
+    var procs = root.procedures
+    if (procs) {
+      for (var group in procs) {
+        var list = procs[group]
+        if (!list || !list.length) continue
+        for (var i = 0; i < list.length; i++) {
+          var item = list[i]
+          if (!item || typeof item !== "object") continue
+          if (item.url === url) return item.name || ""
+          if (item.pages && item.pages.indexOf(url) >= 0) return item.name || ""
+        }
+      }
+    }
+    if (procs && procs.cs === url) return "Chart Supplement"
+    return String(url).split("/").pop()
+  }
+
+  function openChart(url, title) {
+    if (!url) return
+    root.chartUrl = url
+    root.chartTitle = title || chartTitleFor(url)
+    root.chartError = ""
+    root.chartPage = 0
+    root.chartZoom = 1.0
+    root.chartPath = ""
+    root.chartLoading = true
+    root.chartOpen = true
+    if (pdfProcess.running) pdfProcess.running = false
+    pdfProcess.command = ["python3", root.engine, "pdf", url, "--json"]
+    pdfProcess.running = true
+  }
+
+  function applyChart(text) {
+    var result = null
+    try { result = JSON.parse(String(text || "{}")) } catch (e) { result = null }
+    root.chartLoading = false
+    if (result && result.ok && result.path) {
+      root.chartPath = result.path
+      chartDoc.source = Qt.resolvedUrl("file://" + result.path)
+    } else {
+      root.chartError = (result && result.error)
+        ? result.error : "could not download this chart"
+    }
+  }
+
+  function closeChart() {
+    root.chartOpen = false
+    root.chartPath = ""
+    root.chartError = ""
+  }
+
+  function chartStep(delta) {
+    if (!chartDoc || chartDoc.pageCount <= 0) return
+    root.chartPage = Math.max(0, Math.min(chartDoc.pageCount - 1, root.chartPage + delta))
+  }
+
+  function chartZoomBy(factor) {
+    root.chartZoom = Math.max(0.25, Math.min(6.0, root.chartZoom * factor))
+  }
 
   // Chosen deliberately - record the visit and refresh the rail.
   function commit(ident) {
@@ -182,11 +413,49 @@ Item {
     touchProcess.running = true
   }
 
+  // Notes are the one part of the payload the user edits behind our back, in
+  // a separate editor window. Rather than re-running the engine when the
+  // editor exits - which omarchy-launch-editor cannot tell us, because it
+  // spawns a terminal and returns immediately - the file itself is watched.
+  // Saving updates the Summary and the Notes page at once, with no refresh.
+  function applyNotes(text) {
+    if (!root.airportData) return
+    var incoming = String(text || "")
+    if (root.airportData.notes === incoming) return
+    // A new object, because mutating the existing one notifies nothing.
+    var next = {}
+    for (var key in root.airportData) next[key] = root.airportData[key]
+    next.notes = incoming
+    root.airportData = next
+  }
+
   function editNotes() {
     if (!root.airportData || !root.airportData.notes_path) return
     editorProcess.command = ["omarchy-launch-editor", root.airportData.notes_path]
     editorProcess.running = true
     root.close()
+  }
+
+  // Amenity concourses were reachable only by clicking a chip. Tab walks them
+  // instead: it is not a character the search field wants, and the filter is
+  // the only thing on that page worth cycling.
+  function cycleTerminal(delta) {
+    var chips = Model.terminalChips(root.amenities)
+    if (!chips.length) return
+    var current = root.amenityTerminal === "" ? "All" : root.amenityTerminal
+    var at = chips.indexOf(current)
+    if (at < 0) at = 0
+    var next = (at + delta + chips.length) % chips.length
+    root.amenityTerminal = chips[next] === "All" ? "" : chips[next]
+    // A new filter is a new list; start it at the top rather than wherever
+    // the previous one happened to be scrolled to.
+    bodyScroll.contentY = 0
+  }
+
+  function scrollBody(dy) {
+    bodyScroll.contentY = Math.max(
+      0, Math.min(bodyScroll.contentY + dy,
+                  Math.max(0, bodyScroll.contentHeight - bodyScroll.height)))
   }
 
   function isFavourite(ident) {
@@ -212,6 +481,16 @@ Item {
   onTabChanged: if (tab === tabAmenities || tab === tabGround) ensureGroundData()
 
   Timer { id: searchDebounce; interval: 180; onTriggered: root.runSearch() }
+  // Only reason this exists: Date.now() is not a property, so a binding that
+  // depends on the current time has nothing to react to.
+  property int clockTick: 0
+  Timer {
+    interval: 60000
+    repeat: true
+    running: root.opened && !!root.outlook
+    onTriggered: root.clockTick++
+  }
+
   Timer {
     id: loadDebounce
     interval: 220
@@ -243,7 +522,24 @@ Item {
   readonly property var procedures: airportData ? airportData.procedures : null
   readonly property var frequencies: airportData ? airportData.frequencies : null
   readonly property var tfr: airportData ? airportData.tfr : null
+  readonly property var status: airportData ? airportData.status : null
+  readonly property var outlook: (airportData && airportData.weather)
+    ? (airportData.weather.outlook || null) : null
 
+  Process {
+    id: cacheStatusProcess
+    command: ["python3", root.engine, "cache", "status", "--json"]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyCacheStatus(text) }
+  }
+  Process {
+    id: buildProcess
+    // Progress arrives a line at a time, so this cannot be a StdioCollector -
+    // that waits for the process to end, which is exactly what we are waiting
+    // through.
+    stdout: SplitParser { onRead: function (line) { root.applyBuildEvent(line) } }
+    stderr: SplitParser { onRead: function (line) { root.buildStderr = String(line) } }
+    onExited: function (code, status) { root.finishBuild(code) }
+  }
   Process {
     id: recentsProcess
     command: ["python3", root.engine, "recents", "list", "--json"]
@@ -257,6 +553,11 @@ Item {
     id: panelProcess
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyPanel(text) }
     onExited: root.loadingIdent = ""
+  }
+  Process {
+    id: liveProcess
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyLive(text) }
+    onExited: root.liveLoading = false
   }
   Process {
     id: fboProcess
@@ -280,6 +581,27 @@ Item {
   }
   Process { id: pinProcess }
   Process { id: editorProcess }
+
+  Process {
+    id: pdfProcess
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyChart(text) }
+  }
+
+  // Source is set imperatively when a path arrives. Binding it meant an empty
+  // string reached PdfPageImage before the first chart, which warns
+  // 'Protocol "" is unknown' on every frame.
+  PdfDocument { id: chartDoc }
+
+  FileView {
+    id: notesFile
+    path: root.airportData ? (root.airportData.notes_path || "") : ""
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.applyNotes(text())
+    onFileChanged: reload()
+    // No notes file yet is the normal state for most airports, not an error.
+    onLoadFailed: root.applyNotes("")
+  }
   Process { id: touchProcess }
 
   // ---- window -------------------------------------------------------------
@@ -309,6 +631,8 @@ Item {
         MouseArea { anchors.fill: parent }
 
         Row {
+          id: mainRow
+          visible: root.cacheReady
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.top: parent.top
@@ -336,22 +660,68 @@ Item {
               text: root.query
               onTextChanged: root.query = text
 
-              Keys.onEscapePressed: root.close()
-              Keys.onDownPressed: root.moveSelection(1)
-              Keys.onUpPressed: root.moveSelection(-1)
-              Keys.onLeftPressed: root.moveTab(-1)
-              Keys.onRightPressed: root.moveTab(1)
+              // While a chart is up it owns the keys: Esc backs out to the
+              // airport rather than closing the panel, and the arrows page and
+              // scroll the chart instead of moving the airport underneath it.
+              Keys.onEscapePressed: root.chartOpen ? root.closeChart() : root.close()
+              Keys.onDownPressed: function (event) {
+                if (root.chartOpen) chartView.scrollBy(120)
+                else if (event.modifiers & Qt.ControlModifier) root.scrollBody(60)
+                else root.moveSelection(1)
+              }
+              Keys.onUpPressed: function (event) {
+                if (root.chartOpen) chartView.scrollBy(-120)
+                else if (event.modifiers & Qt.ControlModifier) root.scrollBody(-60)
+                else root.moveSelection(-1)
+              }
+              Keys.onLeftPressed: root.chartOpen ? root.chartStep(-1) : root.moveTab(-1)
+              Keys.onRightPressed: root.chartOpen ? root.chartStep(1) : root.moveTab(1)
               Keys.onPressed: function (event) {
-                if (event.key === Qt.Key_D && (event.modifiers & Qt.ControlModifier)) {
+                if (root.chartOpen && (event.key === Qt.Key_Plus
+                    || event.key === Qt.Key_Equal)) {
+                  root.chartZoomBy(1.25); event.accepted = true; return
+                }
+                if (root.chartOpen && event.key === Qt.Key_Minus) {
+                  root.chartZoomBy(0.8); event.accepted = true; return
+                }
+                if (root.chartOpen && event.key === Qt.Key_I) {
+                  root.chartInvert = !root.chartInvert; event.accepted = true; return
+                }
+                if (root.chartOpen && event.key === Qt.Key_0) {
+                  root.chartZoom = 1.0; event.accepted = true; return
+                }
+                if (root.chartOpen && (event.key === Qt.Key_PageDown
+                    || event.key === Qt.Key_PageUp)) {
+                  chartView.scrollBy(event.key === Qt.Key_PageDown
+                                     ? chartView.height * 0.9 : -chartView.height * 0.9)
+                  event.accepted = true; return
+                }
+                // Tab walks the concourse filter on the Amenities page. The
+                // arrows are already spoken for by the airport list, so the
+                // page's own filter needs a key of its own.
+                if (root.tab === root.tabAmenities
+                    && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) {
+                  root.cycleTerminal(event.key === Qt.Key_Backtab ? -1 : 1)
+                  event.accepted = true
+                } else if (event.key === Qt.Key_D && (event.modifiers & Qt.ControlModifier)) {
                   root.toggleFavourite(root.selectedIdent)
                   event.accepted = true
                 } else if (event.key === Qt.Key_PageDown) {
-                  bodyScroll.contentY = Math.min(
-                    bodyScroll.contentY + bodyScroll.height * 0.9,
-                    Math.max(0, bodyScroll.contentHeight - bodyScroll.height))
+                  root.scrollBody(bodyScroll.height * 0.9)
                   event.accepted = true
                 } else if (event.key === Qt.Key_PageUp) {
-                  bodyScroll.contentY = Math.max(0, bodyScroll.contentY - bodyScroll.height * 0.9)
+                  root.scrollBody(-bodyScroll.height * 0.9)
+                  event.accepted = true
+                  // Ctrl+arrows scroll the page a line at a time, and
+                  // Ctrl+Home/End jump to its ends. Plain Home/End are left
+                  // to the search field, which needs them for editing.
+                } else if ((event.modifiers & Qt.ControlModifier)
+                           && event.key === Qt.Key_Home) {
+                  bodyScroll.contentY = 0
+                  event.accepted = true
+                } else if ((event.modifiers & Qt.ControlModifier)
+                           && event.key === Qt.Key_End) {
+                  root.scrollBody(bodyScroll.contentHeight)
                   event.accepted = true
                 }
               }
@@ -487,18 +857,31 @@ Item {
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
-                  text: root.header ? root.header.ident : ""
+                  text: (root.header && root.header.ident) || ""
                   color: Color.menu.text
                   font.family: Style.font.family
                   font.pixelSize: Style.font.displayLarge
                   font.bold: true
                 }
 
+                // The ICAO form of the same field. Not the name of the place -
+                // that is the identifier to its left - but the one you file a
+                // flight plan under, so it stays within reach.
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: !!(root.header && root.header.icao)
+                  textFormat: Text.PlainText
+                  text: root.header ? (root.header.icao || "") : ""
+                  color: Color.muted
+                  font.family: "monospace"
+                  font.pixelSize: Style.font.bodySmall
+                }
+
                 Rectangle {
                   anchors.verticalCenter: parent.verticalCenter
                   visible: !!(root.header && root.header.category)
                   radius: Style.cornerRadius
-                  color: Model.categoryColor(root.header ? root.header.category : "", Color.muted)
+                  color: Model.categoryColor((root.header && root.header.category) || "", Color.muted)
                   implicitWidth: catText.implicitWidth + Style.space(14)
                   implicitHeight: catText.implicitHeight + Style.space(6)
                   Text {
@@ -528,7 +911,7 @@ Item {
                 width: parent.width
                 elide: Text.ElideRight
                 textFormat: Text.PlainText
-                text: root.header ? root.header.name : ""
+                text: (root.header && root.header.name) || ""
                 color: Color.menu.text
                 font.family: Style.font.family
                 font.pixelSize: Style.font.title
@@ -538,7 +921,7 @@ Item {
                 spacing: Style.space(12)
                 Text {
                   textFormat: Text.PlainText
-                  text: root.header ? root.header.where : ""
+                  text: (root.header && root.header.where) || ""
                   color: Color.muted
                   font.family: Style.font.family
                   font.pixelSize: Style.font.bodySmall
@@ -566,7 +949,7 @@ Item {
                 elide: Text.ElideRight
                 textFormat: Text.PlainText
                 visible: !!(root.header && root.header.conditions)
-                text: root.header ? root.header.conditions : ""
+                text: (root.header && root.header.conditions) || ""
                 color: Color.menu.text
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
@@ -722,6 +1105,33 @@ Item {
 
                   Item { width: 1; height: Style.space(4) }
 
+                  // ---- what the FAA is reporting right now ----
+                  // Above the TFR line because a ground stop is the thing that
+                  // changes your day, and it is the reason a traveller opened
+                  // this page at all.
+                  Repeater {
+                    model: Model.statusLines(root.status)
+                    delegate: Text {
+                      required property var modelData
+                      width: parent.width
+                      wrapMode: Text.WordWrap
+                      textFormat: Text.PlainText
+                      text: (modelData.label ? modelData.label + " — " : "")
+                        + modelData.text
+                      color: modelData.alert ? Color.menu.text : Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: modelData.alert ? Style.font.body
+                                                      : Style.font.caption
+                      font.bold: modelData.alert === true
+                    }
+                  }
+
+                  Item {
+                    width: 1
+                    height: Style.space(4)
+                    visible: Model.statusLines(root.status).length > 0
+                  }
+
                   Text {
                     visible: !!Model.tfrLine(root.tfr, root.header ? root.header.us : true)
                     width: parent.width
@@ -759,7 +1169,20 @@ Item {
                   spacing: Style.space(5)
 
                   Text {
-                    visible: !!(root.weather && !root.weather.available)
+                    visible: !!(root.weather && root.weather.pending)
+                    width: parent.width
+                    textFormat: Text.PlainText
+                    text: "Fetching current conditions…"
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                  }
+
+                  Text {
+                    // Only once the fetch has actually come back - an absent
+                    // report and one still in flight are not the same claim.
+                    visible: !!(root.weather && !root.weather.available
+                                && !root.weather.pending)
                     width: parent.width
                     wrapMode: Text.WordWrap
                     textFormat: Text.PlainText
@@ -789,7 +1212,7 @@ Item {
                         wrapMode: Text.WordWrap
                         textFormat: Text.PlainText
                         text: modelData.v
-                        color: modelData.accent ? Model.categoryColor(root.weather ? root.weather.category : "", Color.menu.text) : Color.menu.text
+                        color: modelData.accent ? Model.categoryColor((root.weather && root.weather.category) || "", Color.menu.text) : Color.menu.text
                         font.family: Style.font.family
                         font.pixelSize: Style.font.bodySmall
                         font.bold: modelData.accent === true
@@ -810,12 +1233,150 @@ Item {
                     width: parent.width
                     wrapMode: Text.WrapAnywhere
                     textFormat: Text.PlainText
-                    text: root.weather ? root.weather.raw : ""
+                    text: (root.weather && root.weather.raw) || ""
                     color: Color.muted
                     font.family: "monospace"
                     font.pixelSize: Style.font.bodySmall
                   }
                   Item { width: 1; height: Style.space(8) }
+
+                  // ---- forecast timeline ----
+                  // The TAF was already being downloaded and shown only as its
+                  // raw bulletin. Laid out as a band, it answers the question
+                  // both audiences actually have: when does this change.
+                  PanelSectionHeader {
+                    visible: Model.outlookSegments(root.outlook).length > 0
+                    text: "FORECAST TIMELINE"
+                    foreground: Color.menu.text
+                  }
+
+                  Item {
+                    visible: Model.outlookSegments(root.outlook).length > 0
+                    width: parent.width
+                    height: Style.space(48)
+
+                    readonly property real nowFraction:
+                      Model.outlookNow(root.outlook, root.clockTick)
+
+                    Rectangle {
+                      id: outlookBand
+                      y: Style.space(14)
+                      width: parent.width
+                      height: Style.space(14)
+                      radius: Style.space(3)
+                      color: Color.menu.border
+                      clip: true
+
+                      Repeater {
+                        model: Model.outlookSegments(root.outlook)
+                        delegate: Rectangle {
+                          required property var modelData
+                          x: outlookBand.width * modelData.offset
+                          width: Math.max(1, outlookBand.width * modelData.fraction)
+                          height: outlookBand.height
+                          color: Model.categoryColor(modelData.category, Color.muted)
+
+                          PanelToolTip {
+                            visible: segHover.hovered
+                            text: modelData.from + "-" + modelData.to
+                              + "  " + modelData.category
+                          }
+                          HoverHandler { id: segHover }
+                        }
+                      }
+                    }
+
+                    // ---- now ----
+                    // Sits over the band rather than inside it, so it is not
+                    // clipped and reads against whatever category it lands on.
+                    Rectangle {
+                      visible: parent.nowFraction >= 0
+                      x: outlookBand.width * parent.nowFraction - width / 2
+                      y: outlookBand.y - Style.space(3)
+                      width: Style.space(2)
+                      height: outlookBand.height + Style.space(6)
+                      radius: width / 2
+                      color: Color.menu.text
+                      border.color: Color.menu.background
+                      border.width: 1
+                      Behavior on x { NumberAnimation { duration: 400 } }
+                    }
+
+                    Text {
+                      id: nowLabel
+                      visible: parent.nowFraction >= 0
+                      x: Math.min(outlookBand.width - implicitWidth,
+                                  Math.max(0, outlookBand.width * parent.nowFraction
+                                              - implicitWidth / 2))
+                      y: 0
+                      textFormat: Text.PlainText
+                      text: "now"
+                      color: Color.menu.text
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                      Behavior on x { NumberAnimation { duration: 400 } }
+                    }
+
+                    Repeater {
+                      model: Model.outlookTicks(root.outlook)
+                      delegate: Text {
+                        required property var modelData
+                        x: Math.min(outlookBand.width - implicitWidth,
+                                    Math.max(0, outlookBand.width * modelData.offset
+                                                - implicitWidth / 2))
+                        y: outlookBand.y + outlookBand.height + Style.space(3)
+                        textFormat: Text.PlainText
+                        text: modelData.label
+                        color: Color.muted
+                        font.family: "monospace"
+                        font.pixelSize: Style.font.caption
+                      }
+                    }
+                  }
+
+                  Repeater {
+                    model: Model.outlookRows(root.outlook)
+                    delegate: Row {
+                      required property var modelData
+                      width: parent.width
+                      spacing: Style.space(10)
+
+                      Text {
+                        width: Style.space(104)
+                        textFormat: Text.PlainText
+                        text: modelData.time
+                        color: Color.muted
+                        font.family: "monospace"
+                        font.pixelSize: Style.font.bodySmall
+                      }
+                      Text {
+                        width: Style.space(46)
+                        textFormat: Text.PlainText
+                        text: modelData.category
+                        color: Model.categoryColor(modelData.category, Color.menu.text)
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                        font.bold: true
+                      }
+                      Text {
+                        width: parent.width - Style.space(180)
+                        wrapMode: Text.WordWrap
+                        textFormat: Text.PlainText
+                        text: (modelData.tag ? modelData.tag + " — " : "") + modelData.text
+                        color: Color.menu.text
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                      }
+                    }
+                  }
+
+                  Item {
+                    width: 1
+                    height: Style.space(8)
+                    visible: Model.outlookSegments(root.outlook).length > 0
+                  }
+
                   PanelSectionHeader {
                     text: "FORECAST"
                     foreground: Color.menu.text
@@ -1471,15 +2032,368 @@ Item {
           }
         }
 
+
+        // ---- first run -------------------------------------------------
+        // The FAA publishes airports, runways and charts as whole 28-day
+        // files; there is no per-airport endpoint, so the first open of a
+        // cycle has a download in it. Better to show it happening than to
+        // present an empty panel while a subprocess works.
+        Item {
+          id: buildPane
+          visible: !root.cacheReady
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.margins: Style.space(18)
+          anchors.bottom: footer.top
+          anchors.bottomMargin: Style.space(10)
+
+          Column {
+            anchors.centerIn: parent
+            width: Math.min(parent.width * 0.7, Style.space(420))
+            spacing: Style.space(14)
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              textFormat: Text.PlainText
+              text: root.buildError !== "" ? "Could not build the airport data"
+                                           : "Setting up airport data"
+              color: Color.menu.text
+              font.family: Style.font.family
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+              textFormat: Text.PlainText
+              text: root.buildError !== ""
+                ? root.buildError
+                : "The FAA publishes one file per 28-day cycle, so this "
+                  + "downloads about 40 MB once. It takes a few seconds, and "
+                  + "happens again only when the cycle rolls over."
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+            }
+
+            // Determinate: the engine knows how many steps there are and says
+            // which one it is on, so there is no reason to show a guess.
+            Rectangle {
+              visible: root.buildError === ""
+              anchors.horizontalCenter: parent.horizontalCenter
+              width: parent.width
+              height: Style.space(4)
+              radius: height / 2
+              color: Color.menu.border
+
+              Rectangle {
+                width: parent.width * root.buildFraction
+                height: parent.height
+                radius: parent.radius
+                color: Color.accent
+                Behavior on width {
+                  NumberAnimation { duration: 320; easing.type: Easing.OutCubic }
+                }
+                // A step can take seconds; the pulse says the wait is alive
+                // without pretending to know progress within it.
+                SequentialAnimation on opacity {
+                  running: root.cacheBuilding
+                  loops: Animation.Infinite
+                  NumberAnimation { from: 1.0; to: 0.55; duration: 750
+                                    easing.type: Easing.InOutQuad }
+                  NumberAnimation { from: 0.55; to: 1.0; duration: 750
+                                    easing.type: Easing.InOutQuad }
+                }
+              }
+            }
+
+            Text {
+              visible: root.buildError === ""
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              text: root.buildTotal > 0
+                ? root.buildLabel + " — step " + Math.max(1, root.buildStep)
+                  + " of " + root.buildTotal
+                : root.buildLabel
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Rectangle {
+              visible: root.buildError !== "" && !root.cacheBuilding
+              anchors.horizontalCenter: parent.horizontalCenter
+              implicitWidth: retryLabel.implicitWidth + Style.space(24)
+              implicitHeight: retryLabel.implicitHeight + Style.space(12)
+              radius: Style.cornerRadius
+              color: retryArea.containsMouse ? Color.accent : "transparent"
+              border.color: Color.accent
+              border.width: Style.normalBorderWidth
+
+              Text {
+                id: retryLabel
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: "Try again"
+                color: retryArea.containsMouse ? Color.menu.background : Color.accent
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              MouseArea {
+                id: retryArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.startBuild(false)
+              }
+            }
+          }
+        }
+
+
+        // ---- chart viewer ----------------------------------------------
+        // Sits over the card rather than replacing it, so backing out with Esc
+        // returns to exactly the airport and page you left.
+        Item {
+          id: chartView
+          visible: root.chartOpen
+          anchors.fill: parent
+          anchors.margins: Style.normalBorderWidth
+
+          function scrollBy(dy) {
+            chartFlick.contentY = Math.max(
+              0, Math.min(chartFlick.contentY + dy,
+                          Math.max(0, chartFlick.contentHeight - chartFlick.height)))
+          }
+
+          Rectangle {
+            anchors.fill: parent
+            radius: Style.cornerRadius
+            color: Color.menu.background
+            // Swallow clicks so they never reach the airport underneath.
+            MouseArea { anchors.fill: parent }
+          }
+
+          // ---- toolbar ----
+          Item {
+            id: chartBar
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Style.space(18)
+            height: chartTitleText.implicitHeight + Style.space(10)
+
+            Text {
+              id: chartTitleText
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - chartTools.width - Style.space(16)
+              elide: Text.ElideRight
+              textFormat: Text.PlainText
+              text: root.chartTitle
+              color: Color.menu.text
+              font.family: Style.font.family
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+
+            Row {
+              id: chartTools
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(14)
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: chartDoc.pageCount > 1
+                textFormat: Text.PlainText
+                text: "page " + (root.chartPage + 1) + " of " + chartDoc.pageCount
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+
+              Repeater {
+                model: [
+                  { label: "−", action: "out" },
+                  { label: "reset", action: "reset" },
+                  { label: "+", action: "in" },
+                  { label: "invert", action: "invert" },
+                  { label: "open externally", action: "external" },
+                  { label: "close", action: "close" }
+                ]
+                delegate: Text {
+                  required property var modelData
+                  anchors.verticalCenter: parent.verticalCenter
+                  textFormat: Text.PlainText
+                  text: modelData.label
+                  color: (modelData.action === "invert" && root.chartInvert)
+                    ? Color.accent
+                    : (toolArea.containsMouse ? Color.accent : Color.muted)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  MouseArea {
+                    id: toolArea
+                    anchors.fill: parent
+                    anchors.margins: -Style.space(4)
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      if (modelData.action === "in") root.chartZoomBy(1.25)
+                      else if (modelData.action === "out") root.chartZoomBy(0.8)
+                      else if (modelData.action === "reset") root.chartZoom = 1.0
+                      else if (modelData.action === "invert")
+                        root.chartInvert = !root.chartInvert
+                      else if (modelData.action === "external")
+                        Qt.openUrlExternally(root.chartUrl)
+                      else root.closeChart()
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // ---- the page ----
+          Flickable {
+            id: chartFlick
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: chartBar.bottom
+            anchors.bottom: chartFoot.top
+            anchors.margins: Style.space(18)
+            anchors.topMargin: Style.space(8)
+            clip: true
+            contentWidth: Math.max(width, chartPage.width)
+            contentHeight: Math.max(height, chartPage.height)
+            boundsBehavior: Flickable.StopAtBounds
+            visible: !root.chartLoading && root.chartError === "" && !!root.chartPath
+
+            // Charts are line art on white. Rendering at the displayed pixel
+            // size rather than scaling a smaller bitmap is what keeps the
+            // minimums text and the taxiway labels readable.
+            // Geometry lives on a plain Item, so the page has a size before
+            // any PDF exists. PdfPageImage warns 'Protocol "" is unknown' on
+            // every frame if it is alive with no document loaded, so it is
+            // only created once a chart has actually been fetched.
+            Item {
+              id: chartPage
+              x: Math.max(0, (chartFlick.width - width) / 2)
+              y: Math.max(0, (chartFlick.height - height) / 2)
+
+              // Page size comes from the document, never from implicitWidth:
+              // sourceSize feeds back into an image's implicit size, so sizing
+              // off that is a binding loop.
+              property size pageSize: chartDoc.status === PdfDocument.Ready
+                && chartDoc.pageCount > 0
+                ? chartDoc.pagePointSize(root.chartPage)
+                : Qt.size(612, 792)
+              property real fitScale: (pageSize.width > 0 && pageSize.height > 0
+                                       && chartFlick.width > 0 && chartFlick.height > 0)
+                ? Math.min(chartFlick.width / pageSize.width,
+                           chartFlick.height / pageSize.height)
+                : 1
+              width: pageSize.width * fitScale * root.chartZoom
+              height: pageSize.height * fitScale * root.chartZoom
+              Behavior on width { NumberAnimation { duration: 90 } }
+              Behavior on height { NumberAnimation { duration: 90 } }
+
+              // The sheet. Without it a chart that renders its background
+              // transparent puts black linework on a near-black card, which is
+              // exactly as readable as it sounds.
+              Rectangle {
+                anchors.fill: parent
+                color: root.chartInvert ? "#000000" : "#ffffff"
+              }
+
+              Loader {
+                anchors.fill: parent
+                active: !!root.chartPath
+                sourceComponent: PdfPageImage {
+                  document: chartDoc
+                  currentFrame: root.chartPage
+                  layer.enabled: root.chartInvert
+                  // RGB is swapped end for end; alpha keeps its identity
+                  // mapping (0 -> 0, 1 -> 1). Inverting alpha as well turns
+                  // the page's transparent background opaque white and
+                  // swallows the ink with it.
+                  layer.effect: LevelAdjust {
+                    minimumOutput: Qt.rgba(1, 1, 1, 0)
+                    maximumOutput: Qt.rgba(0, 0, 0, 1)
+                  }
+                  // Render at the size actually shown, so the minimums table
+                  // and the taxiway labels stay readable, not upscaled.
+                  sourceSize.width: Math.max(1, Math.round(width))
+                  sourceSize.height: Math.max(1, Math.round(height))
+                }
+              }
+            }
+
+            // Ctrl+wheel zooms, plain wheel scrolls, as in every other viewer.
+            WheelHandler {
+              acceptedModifiers: Qt.ControlModifier
+              onWheel: function (event) {
+                root.chartZoomBy(event.angleDelta.y > 0 ? 1.15 : 0.87)
+              }
+            }
+          }
+
+          Text {
+            anchors.centerIn: chartFlick
+            width: chartFlick.width * 0.7
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+            visible: root.chartLoading || root.chartError !== ""
+            text: root.chartError !== ""
+              ? root.chartError + "\n\nUse \u201copen externally\u201d to view it in a browser."
+              : "Fetching the chart…"
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+          }
+
+          Text {
+            id: chartFoot
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.margins: Style.space(18)
+            textFormat: Text.PlainText
+            text: (chartDoc.pageCount > 1 ? "←→ page · " : "")
+              + "+/− zoom · 0 reset · i invert · ↑↓ PgUp/PgDn scroll · Esc back"
+              + "   —   not for navigation"
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+        }
+
         // ---- footer ----
         Text {
           id: footer
+          // The chart viewer covers the card and brings its own footer.
+          visible: !root.chartOpen
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.bottom: parent.bottom
           anchors.margins: Style.space(18)
           textFormat: Text.PlainText
-          text: "↑↓ airport · ←→ page · PgUp/PgDn scroll · Esc close   —   not for navigation"
+          text: root.cacheRefreshing
+            ? "Updating to FAA cycle " + root.expectedCycle + " in the background — "
+              + root.buildLabel.toLowerCase()
+            : "↑↓ airport · ←→ page · "
+              + (root.tab === root.tabAmenities
+                 && Model.terminalChips(root.amenities).length ? "Tab concourse · " : "")
+              + "PgUp/PgDn or Ctrl+↑↓ scroll · Esc close   —   not for navigation"
           color: Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
