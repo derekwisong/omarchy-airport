@@ -271,7 +271,7 @@ function tafLines(taf) {
 
 function linkRows(d) {
   var links = (d && d.links) || {}
-  var order = [["directions", "Directions"], ["airnav", "Open in AirNav"],
+  var order = [["directions", "Directions"], ["airnav", "AirNav"],
                ["skyvector", "SkyVector"], ["faa_nfdc", "FAA record"],
                ["notams", "NOTAMs"], ["weather", "Weather"],
                // Live tower audio belongs on the front page too, not only
