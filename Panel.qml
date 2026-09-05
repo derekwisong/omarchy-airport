@@ -1922,7 +1922,9 @@ Item {
 
                   Item { width: 1; height: Style.space(8) }
                   PanelSectionHeader {
-                    text: "FBOs &amp; FUEL"
+                    // PanelSectionHeader is PlainText, so this is an
+                    // ampersand, not an HTML entity.
+                    text: "FBOs & FUEL"
                     foreground: Color.menu.text
                   }
                   Text {
