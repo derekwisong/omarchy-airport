@@ -100,8 +100,9 @@ departure frequencies under their own heading, and counts the rest.
 ## Activating it
 
 **This plugin configures nothing on your system.** Omarchy manifests cannot declare
-keybindings, so bindings live in Hyprland config, which is yours. `install.sh` copies and
-enables; it never writes to your config and never builds anything behind your back.
+keybindings, so bindings live in Hyprland config, which is yours. Installing enables the
+plugin and nothing else — it never writes to your config and never builds anything behind
+your back.
 
 Three ways in:
 
@@ -380,8 +381,27 @@ The panel is built from Omarchy's own shell components — `PanelSectionHeader`,
 `PanelSeparator`, `TextField` — so it inherits the theme, focus and hover treatment every
 other panel uses, rather than reimplementing them.
 
-`~/.config/omarchy/plugins/` hot-reloads on save, so `./install.sh` re-applies edits without a
-restart. If a change doesn't take:
+Symlink the repo into the plugins directory and the shell loads straight out of your working
+tree — no copying, no committing to try a change:
+
+```bash
+ln -s "$PWD" ~/.config/omarchy/plugins/derekwisong.airport
+omarchy-shell shell rescanPlugins
+```
+
+Omarchy supports this properly: the plugin catalog resolves symlinks, and `omarchy plugin
+remove` detects one and unlinks it rather than deleting what it points at. The tradeoff is
+that the running shell is reading the file you are editing, so a half-finished edit is a
+half-finished plugin until you save it again.
+
+To test what a user actually gets, install the committed state the real way instead:
+
+```bash
+omarchy plugin remove derekwisong.airport
+omarchy plugin add . --enable
+```
+
+If a change doesn't take:
 
 ```bash
 omarchy restart shell                                     # REQUIRED to pick up QML changes
@@ -412,12 +432,6 @@ was logged anywhere. `airportData` is the name now.
 **Set `Process.command` imperatively** right before `running = true`. A declarative binding
 on `command` may not have propagated when you start the process in the same block, so it runs
 the previous (or empty) argument list.
-
-`install.sh` copies the working tree into `~/.config/omarchy/plugins/` and enables it, which
-is how to try a change you have not committed. It is a development tool, not the install
-path: it copies rather than clones, so what it leaves behind is not a git checkout and
-`omarchy plugin update` cannot act on it. To go back to an updatable install, remove the
-directory and `omarchy plugin add` the repo again.
 
 ```bash
 ./tests/smoke.sh              # 94 checks against the engine, network required
