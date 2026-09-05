@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A ground stop no longer reads as a closed airport.** The line said
+  `Ground stop — thunderstorms — until 6:45 pm EDT` and sat next to a row
+  labelled `Airport closure`, which is how a program holding ZDC and ZNY
+  departures out of Atlanta came to look like Atlanta being shut. It now names
+  the centres actually included, and says the field is open and that inbound
+  flights are waiting at their departure airport.
+- **A NOTAM is no longer reported as a closure.** The FAA's XML files free-form
+  NOTAMs under `Airport_Closure_List`, so `LAX AD AP CLSD TO NON SKED TRANSIENT
+  GA ACFT EXC 24HR PPR` was shown as LAX being closed. Genuine closures and
+  free-form notices are now told apart and labelled for what they are.
+- **Both TFR detail URLs were 404s**, which is a failure with no symptom: the
+  geometry fetch silently returned nothing, so no TFR was ever measured, and
+  every per-TFR link was dead. Fixed to the endpoints the FAA actually serves.
+
+### Added
+
+- **Delays and TFRs are one `ADVISORIES` section**, because a ground stop, a
+  NOTAM and a TFR are the same question to whoever is reading.
+- **A field inside a TFR is reported as inside it.** A TFR is one or more
+  closed rings — a VIP one is a 30 nm ring with a 10 nm ring inside — and
+  distance is measured to the ring edge, or nought if the field is within it.
+  Measured against a bag of vertices instead, the airport most affected would
+  have read as the one least affected: Morristown sitting in its own 30 nm VIP
+  ring, reported as 30 nm away from it.
+- **TFRs are located rather than counted.** "3 active TFRs in Georgia" answered
+  a question nobody asked. Every active TFR on the national list is now placed
+  from its published geometry and the ones within 50 nm are listed nearest
+  first, each linked to its FAA page. Geometry is cached per NOTAM, so the
+  first lookup costs about three seconds and later ones cost nothing.
+- **Delay programs link to the FAA advisory** they summarise.
+- Ground stops and ground delay programs carry their scope, real start and end
+  times, a live countdown, and how likely the FAA thinks an extension is —
+  read from `nasstatus.faa.gov/api/airport-events`, the JSON the FAA's own
+  dashboard uses. The older XML feed stays as a fallback and, having no scope
+  to report, claims none.
+
+### Changed
+
+- `apt.py tfr` defaults to a 50 nm radius, sorts by distance and drops
+  `--no-geometry`; geometry is the point of it and is now cached.
+
 ## 3.0.0
 
 A major version because the identifiers on screen, the JSON payload and the

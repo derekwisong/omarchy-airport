@@ -360,42 +360,140 @@ function frequencyRows(f) {
   return rows
 }
 
-// TFRs, as one honest line.
+// ---- TFRs, by distance ----------------------------------------------------
+
+// The FAA's own list page, for everything the rows below do not carry.
+var TFR_LIST_URL = "https://tfr.faa.gov/tfr3/?page=list"
+
+// How many restrictions the Summary carries before it stops being a summary.
+var TFR_ROWS = 5
+
+// Individual restrictions, nearest first, each linked to the FAA page for it.
 //
-// The FAA publishes geometry only per-NOTAM, so all this knows is the state.
-// Listing four statewide TFRs as alerts above an airport's own facts implies a
-// proximity that has not been established - so it says how many there are,
-// where to look, and nothing more.
-function tfrLine(t, us) {
-  if (us === false) return ""
-  if (!t || !t.available) return ""
-  var n = ((t.tfrs || []).length)
-  if (!n) return "No active TFRs in " + (t.state || "this state") + "."
-  return n + " active TFR" + (n === 1 ? "" : "s") + " in " + t.state
-    + " — proximity not checked, see tfr.faa.gov"
+// This used to be a count by state, which answered a question nobody asked:
+// a restriction 200 miles away is not in your way, and one 20 miles over the
+// state line does not stop being in your way because the line is there. The
+// engine locates every active TFR now, so these are the ones near this field.
+//
+// "Flight restriction" rather than "TFR" because the Summary is the page a
+// non-pilot reads; the abbreviation appears once, on the link.
+function tfrLines(t, us) {
+  if (us === false) return []
+  if (!t || !t.available) return []
+  var list = t.tfrs || []
+  var radius = t.radius_nm || 50
+  var out = []
+  for (var i = 0; i < list.length && i < TFR_ROWS; i++) {
+    var f = list[i]
+    var bits = []
+    if (f.type) bits.push(f.type)
+    if (f.description) bits.push(f.description)
+    // Zero is not a distance anyone reads as "you are in it".
+    var near = f.distance_nm > 0 ? f.distance_nm + " nm" : "field is inside it"
+    var text = near + " · " + bits.join(" · ")
+    out.push({ label: "Flight restriction", text: text, alert: true,
+               html: escapeHtml("Flight restriction — " + statusTrim(text))
+                 + advisoryLink(f.url, "detail") })
+  }
+  // What the rows above leave out, and what could not be placed on a map at
+  // all. A standing national notice is not near this field; it is near every
+  // field, which is a different claim and gets a different line.
+  var notes = []
+  if (!list.length)
+    notes.push("No flight restrictions within " + radius + " nm")
+  else if (list.length > TFR_ROWS)
+    notes.push((list.length - TFR_ROWS) + " more within " + radius + " nm")
+  if (t.nationwide)
+    notes.push(t.nationwide + " standing nationwide notice"
+               + (t.nationwide === 1 ? "" : "s"))
+  if (t.unlocated)
+    notes.push(t.unlocated + " could not be located")
+  out.push({ label: "", text: notes.join(" · "), alert: false,
+             html: escapeHtml(notes.join(" · "))
+               + advisoryLink(TFR_LIST_URL, "TFR list") })
+  return out
+}
+
+
+// How long a programme has left, worked out when the panel draws rather than
+// when the feed was fetched — a cached "in 40 minutes" is wrong a minute after
+// it is written. Nothing past a day, where the date the line already carries
+// says more than a countdown does.
+function statusRemaining(iso) {
+  if (!iso) return ""
+  var end = Date.parse(String(iso))
+  if (isNaN(end)) return ""
+  var mins = Math.floor((end - Date.now()) / 60000)
+  if (mins <= 0) return "past its end time"
+  if (mins > 24 * 60) return ""
+  if (mins < 60) return "in " + mins + " minute" + (mins === 1 ? "" : "s")
+  var hours = Math.floor(mins / 60), rest = mins % 60
+  return "in " + hours + " hour" + (hours === 1 ? "" : "s")
+    + (rest ? " " + rest + " minutes" : "")
 }
 
 
 // FAA-reported delays and closures for the Summary. An empty list from a feed
 // that answered means the FAA is reporting nothing; a feed that did not answer
 // returns no rows at all, because "unknown" and "fine" are different claims.
+//
+// A ground stop is an arrival programme: it holds flights bound for the field,
+// at the field they are leaving from, and usually only those filed out of a
+// named few centres. It says nothing about the runways. Labelled on its own,
+// next to a row reading "Airport closure", it was read as the airport being
+// shut — so the headline names who is actually held and the caption says the
+// field is open.
 function statusLines(s) {
   if (!s || !s.available) return []
   var items = s.items || []
   var out = []
   for (var i = 0; i < items.length; i++) {
     var it = items[i]
-    var bits = []
-    // Closure reasons are raw NOTAM text and run to several lines; they would
-    // swamp the Summary, so only a short reason is shown inline.
-    if (it.reason && it.reason.length <= 90) bits.push(it.reason)
-    if (it.detail) bits.push(it.detail)
-    out.push({ label: it.label, text: bits.join(" — "), alert: true })
+    // Raw NOTAM text runs to several lines and would swamp the Summary.
+    var head = statusTrim(it.text || it.detail || it.reason || "")
+    var left = statusRemaining(it.ends)
+    if (left) head += (head ? "  " : "") + "(" + left + ")"
+    var headline = it.label ? it.label + " — " + head : head
+    out.push({ label: it.label, text: head, alert: true,
+               html: escapeHtml(headline) })
+    // The caption is not trimmed: it is the line carrying "the field is open",
+    // and a cut there loses exactly the thing this row exists to say.
+    var caption = (it.caption && it.caption !== head) ? it.caption : ""
+    var link = statusLink(it.url)
+    if (caption || link)
+      out.push({ label: "", text: caption, alert: false,
+                 html: escapeHtml(caption) + link })
   }
   if (!out.length)
     out.push({ label: "", text: "No delays or closures reported by the FAA.",
-               alert: false })
+               alert: false, html: "No delays or closures reported by the FAA." })
   return out
+}
+
+
+// The advisory the FAA actually published. These lines are a summary of it,
+// and a summary is where a ground stop turns into "the airport is closed" -
+// so the row carries a way to go and read the thing it is summarising.
+//
+// The URL comes out of the feed, so it goes through the same two gates as any
+// other mapped data reaching markup: http(s) only, then escaped. The FAA
+// writes the advisory title into the query string, spaces and all.
+function statusLink(url) {
+  return advisoryLink(url, "FAA advisory")
+}
+
+
+function advisoryLink(url, label) {
+  var safe = safeUrl(url)
+  if (!safe) return ""
+  return "   <a href=\'" + escapeHtml(safe.replace(/ /g, "%20")) + "\'>"
+    + escapeHtml(label) + "</a>"
+}
+
+
+function statusTrim(text) {
+  var s = String(text || "")
+  return s.length <= 120 ? s : s.substr(0, 119).replace(/\s+\S*$/, "") + "…"
 }
 
 

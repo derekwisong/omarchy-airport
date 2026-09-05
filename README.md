@@ -45,7 +45,7 @@ the links out — stays put on every page.
 
 | Page | What's there |
 |---|---|
-| **Summary** | Runway, tower and hours, airspace, fuel, attended hours, landing fee, a forecast band, FAA delays and TFRs |
+| **Summary** | Runway, tower and hours, airspace, fuel, attended hours, landing fee, a forecast band, and Advisories — FAA delay programs and flight restrictions within 50 nm |
 | **Weather** | Category, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, a forecast timeline, raw METAR and TAF |
 | **Amenities** | Food, shops and lounges by concourse, filterable, each linking to Google Maps |
 | **Runways** | Which runway the wind favours, then every runway per end: lengths, surface, lighting, alignment, ILS, VGSI, displaced thresholds, LDA, obstructions, pattern altitude |
@@ -99,6 +99,7 @@ python3 $apt runways KPOU --svg     python3 $apt status DCA
 python3 $apt procedures KATL        python3 $apt wx KPOU
 python3 $apt amenities ATL          python3 $apt fbo KPOU
 python3 $apt nearby KPOU --radius 50 --fuel
+python3 $apt tfr KEWR --radius 50
 python3 $apt notes ATL add "Sky Club F is the good one"
 ```
 
@@ -110,8 +111,14 @@ Notes are markdown in `~/.local/share/airport-info/notes/<IDENT>.md`. Recents li
 - **No NOTAMs.** No key-free source exists, so it does not have them and does not link to a
   search that would imply it had checked.
 - **No ratings.** OpenStreetMap has no rating field. Names link to Google Maps, where they are.
-- **TFRs are counted, not located.** The FAA publishes geometry per-NOTAM only, so it reports
-  how many are active in the state and links to the list.
+- **TFRs are located, but against the field, not your route.** Every active TFR is placed and
+  the ones within 50 nm are listed nearest first, each linked to its FAA page. A restriction
+  60 nm away on your track is real and is not on this list.
+- **The standing national notices carry no geometry.** Stadium rules, the DC restrictions and
+  the blanket security items are not in one place, so they are counted rather than measured.
+- **A ground stop is not a closed airport.** It holds flights bound for the field, at the field
+  they are leaving from, usually only those filed out of a few named centres. The line says
+  which centres and says the runways are open, because the label alone read as a closure.
 - **Outside FAA coverage it says so** rather than reporting no tower or no fuel.
 - **Delays are what the FAA reports**, not a prediction. A forecast is a forecast.
 
@@ -134,7 +141,7 @@ omarchy restart shell      # required to pick up QML changes
 remove it and `omarchy plugin add .` instead.
 
 ```bash
-./tests/smoke.sh              # 97 checks, network required
+./tests/smoke.sh              # 104 checks, network required
 ./tests/smoke.sh --with-osm   # adds Overpass and AirNav
 omarchy plugin validate .
 ```
@@ -157,8 +164,8 @@ All public and unauthenticated. No account, no API key.
 | [FAA d-TPP](https://aeronav.faa.gov/) | Approaches, SIDs, STARs, ODPs, minimums, diagrams | Public domain |
 | [FAA Chart Supplement](https://aeronav.faa.gov/) | Per-airport supplement pages | Public domain |
 | [aviationweather.gov](https://aviationweather.gov/) | METAR, TAF, flight category | NOAA, public domain |
-| [FAA NAS Status](https://nasstatus.faa.gov/) | Ground delays and stops, closures | Public domain |
-| [FAA TFR](https://tfr.faa.gov/) | Active restrictions by state | Public domain |
+| [FAA NAS Status](https://nasstatus.faa.gov/) | Ground delays and stops with the centres they include, closures, advisory links | Public domain |
+| [FAA TFR](https://tfr.faa.gov/) | Active restrictions, with per-NOTAM geometry for distance | Public domain |
 | [OurAirports](https://ourairports.com/) | Worldwide airports and runways, IATA codes, search ranking | Public domain |
 | [OpenStreetMap](https://www.openstreetmap.org/) via [Overpass](https://overpass-api.de/) | Terminal food, shops, lounges and their concourses | © OpenStreetMap contributors, **ODbL** |
 | [AirNav](https://www.airnav.com/) | FBO names and fuel prices | © AirNav, LLC — one airport on demand, cached 24h |

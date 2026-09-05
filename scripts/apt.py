@@ -96,7 +96,8 @@ AERONAV = "https://aeronav.faa.gov"
 NFDC_EXTRA = "https://nfdc.faa.gov/webContent/28DaySub/extra"
 AWC = "https://aviationweather.gov/api/data"
 TFR_LIST_URL = "https://tfr.faa.gov/tfrapi/exportTfrList"
-TFR_DETAIL_URL = "https://tfr.faa.gov/save_pages/detail_%s.xml"
+TFR_DETAIL_URL = "https://tfr.faa.gov/download/detail_%s.xml"
+TFR_PAGE_URL = "https://tfr.faa.gov/tfr3/?page=detail_%s"
 OURAIRPORTS = "https://davidmegginson.github.io/ourairports-data"
 OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
@@ -1646,33 +1647,128 @@ METAR_MISS_TTL_SECONDS = 1800
 
 
 TFR_CACHE = CACHE_DIR / "tfr.json"
+TFR_GEOM_CACHE = CACHE_DIR / "tfr_geometry.json"
 TFR_TTL_SECONDS = 900
+TFR_RADIUS_NM = 50.0
+# A ceiling on how many detail files one call will fetch, so a freak day on the
+# national list cannot stall the Summary. In normal weeks the list is ~120 and
+# the geometry cache is already warm for all but the newest few.
+TFR_MAX_LOOKUPS = 160
 
 
-def tfrs_for_state(state):
-    """Active TFRs in one state. The national list is small, so cache it whole
-    rather than hammering the FAA once per airport."""
-    if not state:
-        return {"available": True, "tfrs": []}
-    data = None
+def tfr_page_url(notam_id):
+    return TFR_PAGE_URL % (notam_id or "").replace("/", "_")
+
+
+def _tfr_list():
+    """The national list, cached whole. It is one small file and every airport
+    reads the same one, so it is never fetched per airport."""
     if TFR_CACHE.exists() and (time.time() - TFR_CACHE.stat().st_mtime) < TFR_TTL_SECONDS:
         try:
-            data = json.loads(TFR_CACHE.read_text())
+            return json.loads(TFR_CACHE.read_text())
         except Exception:
-            data = None
-    if data is None:
-        fetched = fetch_tfrs()
-        if isinstance(fetched, dict) and "error" in fetched:
-            return {"available": False, "tfrs": [], "error": fetched["error"]}
-        data = fetched or []
+            pass
+    fetched = fetch_tfrs()
+    if isinstance(fetched, dict) and "error" in fetched:
+        return fetched
+    data = fetched or []
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    TFR_CACHE.write_text(json.dumps(data))
+    return data
+
+
+def _tfr_geom_cache():
+    """Geometry keyed by NOTAM id. A NOTAM's shape never changes, so this is
+    good until the NOTAM drops off the list - which is what makes locating the
+    whole national list affordable on every lookup after the first."""
+    try:
+        cache = json.loads(TFR_GEOM_CACHE.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(cache, dict):
+        return {}
+    out = {}
+    for key, val in cache.items():
+        if not isinstance(val, list) or not val:
+            continue
+        # A ring is a list of points; a bare list of points is one ring.
+        rings = val if isinstance(val[0], list) and val[0] and \
+            isinstance(val[0][0], list) else [val]
+        out[key] = [[tuple(p) for p in ring] for ring in rings]
+    return out
+
+
+def _tfr_locate(notam_ids, cache):
+    """Fill the cache for these NOTAMs, fetching in parallel.
+
+    Each detail file is a few tens of KB and the FAA answers them quickly, but
+    a hundred of them one after another is a minute the panel does not have."""
+    missing = [n for n in notam_ids if n and n not in cache][:TFR_MAX_LOOKUPS]
+    if not missing:
+        return False
+    try:
+        import concurrent.futures as futures
+        with futures.ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
+            list(pool.map(lambda nid: tfr_geometry(nid, cache), missing))
+    except Exception:
+        for nid in missing:
+            tfr_geometry(nid, cache)
+    try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        TFR_CACHE.write_text(json.dumps(data))
-    hits = [{"id": t.get("notam_id", ""), "type": t.get("type", ""),
-             "description": t.get("description", ""),
-             "url": "https://tfr.faa.gov/save_pages/detail_%s.html"
-                    % t.get("notam_id", "").replace("/", "_")}
-            for t in data if (t.get("state") or "").upper() == state.upper()]
-    return {"available": True, "tfrs": hits, "state": state}
+        tmp = TFR_GEOM_CACHE.with_suffix(".part")
+        tmp.write_text(json.dumps({k: v for k, v in cache.items()}))
+        os.replace(tmp, TFR_GEOM_CACHE)
+    except OSError:
+        pass
+    return True
+
+
+def tfrs_near(rec, radius_nm=TFR_RADIUS_NM):
+    """Active TFRs within radius_nm of one airport.
+
+    "3 active TFRs in Georgia" answers a question nobody asked: a restriction
+    200 miles away is not in your way, and one 20 miles over the state line
+    does not stop being in your way. So every TFR on the national list is
+    located once, cached by NOTAM id, and reported by distance.
+
+    A TFR whose detail file will not parse is counted separately rather than
+    dropped. Not knowing where something is is not the same as it being far."""
+    if rec is None or rec["lat"] is None or rec["lon"] is None:
+        return {"available": False, "tfrs": []}
+    data = _tfr_list()
+    if isinstance(data, dict) and "error" in data:
+        return {"available": False, "tfrs": [], "error": data["error"]}
+
+    cache = _tfr_geom_cache()
+    ids = [t.get("notam_id", "") for t in data]
+    _tfr_locate(ids, cache)
+
+    hits, nationwide, unlocated = [], 0, 0
+    for tfr in data:
+        nid = tfr.get("notam_id", "")
+        rings = cache.get(nid)
+        if not rings:
+            # The standing national notices - stadiums, the DC rules, blanket
+            # security items - carry no polygon because they are not in one
+            # place. They are not near this airport; they are near every
+            # airport, which is a different line on the page.
+            if (tfr.get("state") or "").upper() == "USA":
+                nationwide += 1
+            else:
+                unlocated += 1
+            continue
+        dist = tfr_distance_nm(rec["lat"], rec["lon"], rings)
+        if dist is None or dist > radius_nm:
+            continue
+        hits.append({"id": nid, "type": tfr.get("type", ""),
+                     "description": tfr.get("description", ""),
+                     "state": tfr.get("state", ""),
+                     "distance_nm": round(dist, 1),
+                     "url": tfr_page_url(nid)})
+    hits.sort(key=lambda t: t["distance_nm"])
+    return {"available": True, "tfrs": hits, "state": rec["state"],
+            "radius_nm": radius_nm, "checked": len(data),
+            "nationwide": nationwide, "unlocated": unlocated}
 
 
 # Set when a weather fetch failed outright and there was no stale copy to fall
@@ -2019,22 +2115,105 @@ def fetch_tfrs():
         return {"error": str(exc)}
 
 
-def tfr_geometry(notam_id):
-    """Best effort: pull lat/lon out of a TFR detail page."""
-    safe = notam_id.replace("/", "_")
-    try:
-        xml = Http.get(TFR_DETAIL_URL % safe, timeout=45, retries=1)
-    except Exception:
-        return None
-    lats = re.findall(r"<latitude>([\d.\-]+)</latitude>", xml, re.I)
-    lons = re.findall(r"<longitude>([\d.\-]+)</longitude>", xml, re.I)
+# The detail file is XNOTAM, which writes a vertex as <geoLat>32.76666667N</>
+# and <geoLong>083.75W</> - degrees with the hemisphere on the end rather than
+# a sign. Paired in document order, so they are read as a pair.
+TFR_VERTEX = re.compile(
+    r"<geoLat>\s*([\d.]+)\s*([NS])\s*</geoLat>\s*"
+    r"<geoLong>\s*([\d.]+)\s*([EW])\s*</geoLong>", re.I | re.S)
+
+
+# A TFR is one or more closed areas, each its own <abdMergedArea>. A VIP one is
+# typically two: a 30 nm ring and a 10 nm ring inside it. They have to stay
+# apart, because a point inside a ring is nought miles from the TFR, and a ring
+# flattened into a bag of vertices would report it as the ring's radius away -
+# the airport most affected looking like the one least affected.
+TFR_AREA = re.compile(r"<abdMergedArea>(.*?)</abdMergedArea>", re.I | re.S)
+
+
+def _tfr_vertices(xml):
     pts = []
-    for a, b in zip(lats, lons):
+    for lat, ns, lon, ew in TFR_VERTEX.findall(xml):
         try:
-            pts.append((float(a), float(b)))
+            lat, lon = float(lat), float(lon)
         except ValueError:
             continue
-    return pts or None
+        pts.append((-lat if ns.upper() == "S" else lat,
+                    -lon if ew.upper() == "W" else lon))
+    return pts
+
+
+def _tfr_rings(xml):
+    rings = [r for r in (_tfr_vertices(a) for a in TFR_AREA.findall(xml))
+             if len(r) >= 3]
+    if rings:
+        return rings
+    # No area blocks: take what vertices there are as one ring rather than
+    # reporting a TFR with a published shape as unlocatable.
+    loose = _tfr_vertices(xml)
+    return [loose] if len(loose) >= 3 else []
+
+
+def _in_ring(lat, lon, ring):
+    """Ray casting. At TFR scale, degrees are a good enough plane."""
+    inside = False
+    for i in range(len(ring)):
+        y1, x1 = ring[i]
+        y2, x2 = ring[(i + 1) % len(ring)]
+        if (y1 > lat) != (y2 > lat):
+            if lon < x1 + (lat - y1) * (x2 - x1) / (y2 - y1):
+                inside = not inside
+    return inside
+
+
+def _segment_nm(lat, lon, a, b):
+    """Point to segment on a plane centred on the point. Degrees of longitude
+    shrink with latitude, so they are scaled; at tens of miles the error is far
+    below the tenth of a mile this is printed to."""
+    klon = 60.0 * math.cos(math.radians(lat))
+    ax, ay = (a[1] - lon) * klon, (a[0] - lat) * 60.0
+    bx, by = (b[1] - lon) * klon, (b[0] - lat) * 60.0
+    dx, dy = bx - ax, by - ay
+    if dx == 0.0 and dy == 0.0:
+        return math.hypot(ax, ay)
+    t = max(0.0, min(1.0, -(ax * dx + ay * dy) / (dx * dx + dy * dy)))
+    return math.hypot(ax + t * dx, ay + t * dy)
+
+
+def _ring_distance_nm(lat, lon, ring):
+    if _in_ring(lat, lon, ring):
+        return 0.0
+    return min(_segment_nm(lat, lon, ring[i], ring[(i + 1) % len(ring)])
+               for i in range(len(ring)))
+
+
+def tfr_distance_nm(lat, lon, rings):
+    """How far outside the TFR you are. Zero means inside it."""
+    usable = [r for r in rings or [] if len(r) >= 3]
+    if not usable:
+        return None
+    return min(_ring_distance_nm(lat, lon, r) for r in usable)
+
+
+def tfr_geometry(notam_id, cache=None):
+    """The vertices of one TFR. Best effort: a TFR whose detail file cannot be
+    read or parsed returns None, which is reported as an unknown distance and
+    never as a TFR that is far away."""
+    if not notam_id:
+        return None
+    if cache is not None and notam_id in cache:
+        return cache[notam_id] or None
+    try:
+        rings = _tfr_rings(Http.get(TFR_DETAIL_URL % notam_id.replace("/", "_"),
+                                    timeout=25, retries=1))
+    except Exception:
+        return None
+    # A NOTAM's geometry does not change, so a hit is good until the NOTAM
+    # itself drops off the list. Only a successful read is worth remembering;
+    # a failed one should be retried.
+    if cache is not None and rings:
+        cache[notam_id] = rings
+    return rings or None
 
 
 # --------------------------------------------------------------------------
@@ -3034,47 +3213,47 @@ def cmd_wx(args):
 def cmd_tfr(args):
     conn = db_connect()
     rec = need_airport(conn, args.airport) if args.airport else None
-    data = fetch_tfrs()
-    if isinstance(data, dict) and "error" in data:
-        die("TFR list unavailable: %s" % data["error"])
-
-    results = []
-    state = None
-    if rec and rec["source"] == "faa":
-        state = rec["state"]
-    for tfr in data:
-        if state and tfr.get("state") and tfr["state"].upper() != state.upper():
-            continue
-        results.append(tfr)
-
-    if rec and not args.no_geometry:
-        refined = []
-        for tfr in results[:12]:  # each detail page is a separate fetch
-            pts = tfr_geometry(tfr.get("notam_id", ""))
-            if pts:
-                dist = min(haversine_nm(rec["lat"], rec["lon"], a, b) for a, b in pts)
-                tfr["distance_nm"] = round(dist, 1)
-                if dist > args.radius:
-                    continue
-            refined.append(tfr)
-        results = refined
-
-    if args.json:
-        print(json.dumps({"airport": rec, "radius_nm": args.radius,
-                          "tfrs": results}, indent=2, default=str))
+    if not rec:
+        data = _tfr_list()
+        if isinstance(data, dict) and "error" in data:
+            die("TFR list unavailable: %s" % data["error"])
+        if args.json:
+            print(json.dumps(data, indent=2, default=str))
+            return
+        for tfr in data:
+            print("%-9s %-18s %-3s %s" % (tfr.get("notam_id", ""), tfr.get("type", ""),
+                                          tfr.get("state", ""), tfr.get("description", "")))
         return
 
-    if rec:
-        print("Active TFRs near %s (%s, within %s nm where geometry is published)\n"
-              % (display_id(rec), state or "?", args.radius))
-    if not results:
-        print("None found.")
-    for tfr in results:
-        dist = "  ~%.0f nm" % tfr["distance_nm"] if "distance_nm" in tfr else ""
-        print("%-9s %-18s %s%s" % (tfr.get("notam_id", ""), tfr.get("type", ""),
-                                   tfr.get("description", ""), dist))
-        print("          https://tfr.faa.gov/save_pages/detail_%s.html"
-              % tfr.get("notam_id", "").replace("/", "_"))
+    result = tfrs_near(rec, radius_nm=args.radius)
+    if not result["available"]:
+        die("TFR list unavailable: %s" % result.get("error", "unknown"))
+    if args.json:
+        print(json.dumps({"airport": display_id(rec), "radius_nm": args.radius,
+                          "tfrs": result["tfrs"], "checked": result["checked"],
+                          "nationwide": result["nationwide"],
+                          "unlocated": result["unlocated"]}, indent=2, default=str))
+        return
+
+    print("Active TFRs within %g nm of %s\n" % (args.radius, display_id(rec)))
+    if not result["tfrs"]:
+        print("None.")
+    for tfr in result["tfrs"]:
+        # Zero means the field is inside it, which is worth a word rather than
+        # a number a reader has to interpret.
+        near = ("inside" if tfr["distance_nm"] <= 0
+                else "%.1f nm" % tfr["distance_nm"])
+        print("%-9s %-18s %8s  %s" % (tfr["id"], tfr["type"], near,
+                                      tfr["description"]))
+        print("          %s" % tfr["url"])
+    extra = []
+    if result["nationwide"]:
+        extra.append("%d standing nationwide notice%s apply everywhere"
+                     % (result["nationwide"], "" if result["nationwide"] == 1 else "s"))
+    if result["unlocated"]:
+        extra.append("%d could not be located" % result["unlocated"])
+    print("\n%d active TFRs checked nationally%s."
+          % (result["checked"], "; " + ", ".join(extra) if extra else ""))
     print("\nThis is a filtered view of the FAA TFR list and is NOT a substitute for an "
           "official preflight briefing. Check https://tfr.faa.gov and NOTAMs.")
 
@@ -3686,11 +3865,210 @@ def taf_group_summary(group):
 # --------------------------------------------------------------------------
 
 NAS_STATUS_URL = "https://nasstatus.faa.gov/api/airport-status-information"
+NAS_EVENTS_URL = "https://nasstatus.faa.gov/api/airport-events"
 NAS_STATUS_TTL = 300
 NAS_CACHE = CACHE_DIR / "nas_status.json"
 
+# The sentence that keeps a ground stop from reading as a closed airport. Both
+# programs hold traffic bound for the field, at the field it is leaving from -
+# the runways are open, departures roll, and anything airborne keeps coming.
+HELD_AT_ORIGIN = "the field is open; inbound flights wait at their departure airport"
+
+NAS_KEYS = ("kind", "label", "text", "scope", "reason", "detail",
+            "caption", "starts", "ends", "url")
+
+
+def _nas_minutes(n):
+    """66 -> '1 hour 6 minutes'. The feed counts in whole minutes."""
+    try:
+        n = int(round(float(n)))
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    hours, mins = divmod(n, 60)
+    bits = []
+    if hours:
+        bits.append("%d hour%s" % (hours, "" if hours == 1 else "s"))
+    if mins:
+        bits.append("%d minute%s" % (mins, "" if mins == 1 else "s"))
+    return " ".join(bits)
+
+
+def _nas_zulu(iso):
+    """'2026-09-05T22:45:00Z' -> 'until 2245Z'. Absolute, so it cannot go stale
+    in the cache the way a relative phrasing would."""
+    try:
+        return "until %sZ" % _nas_time(iso).strftime("%H%M")
+    except (AttributeError, ValueError):
+        return ""
+
+
+def _nas_time(iso):
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _nas_relative(iso, now=None):
+    """How long is left, worked out at read time rather than at fetch time.
+
+    Only for something ending today. A NOTAM that runs to next May is not a
+    countdown, and "in 6353 hours" is not an answer to any question."""
+    when = _nas_time(iso)
+    if when is None:
+        return ""
+    delta = (when - (now or datetime.now(timezone.utc))).total_seconds()
+    if delta <= 0:
+        return "past its end time"
+    if delta > 24 * 3600:
+        return ""
+    return "in %s" % (_nas_minutes(delta // 60) or "under a minute")
+
+
+# The feed grades a program's chance of being extended. Left as a bare word it
+# reads as a category; spelled out it reads as what it means for your evening.
+NAS_EXTENSION = {"high": "likely to be extended", "medium": "may be extended"}
+
+
+def _nas_until(iso):
+    """A date for something running past today, where a Zulu time says little."""
+    when = _nas_time(iso)
+    return ("in effect until %s" % when.strftime("%b %d")) if when else ""
+
+
+def _nas_notam_text(raw):
+    """Raw NOTAM text, less the parts the reader already has: the leading
+    "!LAX 05/277 LAX" identifier and the trailing validity group, which the
+    dates carried alongside it say more legibly."""
+    text = re.sub(r"^!\S+\s+\d+/\d+\s+\S+\s+", "", str(raw or "").strip())
+    return re.sub(r"\s+\d{10}-\d{10}$", "", text).strip()
+
+
+def _nas_facilities(centers, traffic="arrivals"):
+    """Who a program actually holds.
+
+    A ground stop names the ARTCCs whose departures are held; it is not a claim
+    about the airport itself. Naming them is the whole difference between
+    "traffic from two centers is waiting" and "Atlanta is shut". Past a handful
+    the list stops being readable, so it becomes a count."""
+    names = [str(c).strip().upper() for c in (centers or []) if str(c).strip()]
+    if not names:
+        return traffic
+    if len(names) <= 6:
+        return "%s from %s" % (traffic, ", ".join(names))
+    return "%s from %d centers" % (traffic, len(names))
+
+
+def _nas_entry(**kw):
+    """Every entry carries every key, so the QML and the CLI can read one shape
+    whichever feed it came from."""
+    entry = dict.fromkeys(NAS_KEYS, "")
+    entry.update({k: v for k, v in kw.items() if v})
+    return entry
+
+
+def _nas_caption(*bits):
+    return " · ".join(b for b in bits if b)
+
+
+def _nas_parse_events(payload):
+    """The FAA dashboard's own JSON, which carries what the XML drops: the
+    facilities a program includes, real timestamps, and genuine closures kept
+    apart from free-form NOTAMs."""
+    out = {}
+
+    def add(code, entry):
+        code = str(code or "").strip().upper()
+        if code:
+            out.setdefault(code, []).append(entry)
+
+    for ap in payload if isinstance(payload, list) else []:
+        if not isinstance(ap, dict):
+            continue
+        code = ap.get("airportId")
+
+        gs = ap.get("groundStop") or {}
+        if gs:
+            scope = _nas_facilities(gs.get("includedFacilities"))
+            ends = gs.get("endTime") or gs.get("programExpirationTime") or ""
+            odds = str(gs.get("probabilityOfExtension") or "").strip().lower()
+            add(code, _nas_entry(
+                kind="ground_stop", label="Ground stop", scope=scope, ends=ends,
+                starts=gs.get("startTime") or "",
+                text=" ".join(x for x in (scope, "held", _nas_zulu(ends)) if x),
+                reason=str(gs.get("impactingCondition") or "").strip(),
+                caption=_nas_caption(
+                    str(gs.get("impactingCondition") or "").strip(),
+                    str(gs.get("includedFlights") or "").strip(),
+                    NAS_EXTENSION.get(odds, ""),
+                    HELD_AT_ORIGIN),
+                url=str(gs.get("advisoryUrl") or "").strip()))
+
+        gd = ap.get("groundDelay") or {}
+        if gd:
+            scope = _nas_facilities(gd.get("includedFacilities"))
+            ends = gd.get("endTime") or ""
+            avg, most = _nas_minutes(gd.get("avgDelay")), _nas_minutes(gd.get("maxDelay"))
+            detail = ", ".join(b for b in ("average %s" % avg if avg else "",
+                                           "up to %s" % most if most else "") if b)
+            add(code, _nas_entry(
+                kind="ground_delay", label="Ground delay program", scope=scope,
+                ends=ends, starts=gd.get("startTime") or "", detail=detail,
+                text=" ".join(x for x in (scope, "delayed", _nas_zulu(ends)) if x),
+                reason=str(gd.get("impactingCondition") or "").strip(),
+                caption=_nas_caption(detail,
+                                     str(gd.get("impactingCondition") or "").strip(),
+                                     HELD_AT_ORIGIN),
+                url=str(gd.get("advisoryUrl") or "").strip()))
+
+        for key, label in (("arrivalDelay", "Arrival delays"),
+                           ("departureDelay", "Departure delays")):
+            d = ap.get(key) or {}
+            if not d:
+                continue
+            ad = d.get("arrivalDeparture") or {}
+            span = "%s to %s" % (str(ad.get("min") or "?").strip(),
+                                 str(ad.get("max") or "?").strip())
+            trend = str(ad.get("trend") or d.get("trend") or "").strip().lower()
+            detail = span + (", %s" % trend if trend else "")
+            reason = str(d.get("reason") or "").strip()
+            add(code, _nas_entry(kind="delay", label=label, detail=detail,
+                                 text=detail, reason=reason, caption=reason))
+
+        cl = ap.get("airportClosure") or {}
+        if cl:
+            reason = str(cl.get("reason") or cl.get("simpleText")
+                         or cl.get("text") or "").strip()
+            ends = cl.get("endTime") or ""
+            reopen = _nas_time(ends)
+            detail = ("reopens %s" % reopen.strftime("%b %d at %H:%M UTC")) if reopen else ""
+            add(code, _nas_entry(kind="closure", label="Airport closure",
+                                 detail=detail, text=detail, ends=ends,
+                                 starts=cl.get("startTime") or "",
+                                 reason=reason, caption=reason))
+
+        ff = ap.get("freeForm") or {}
+        if ff:
+            # The XML feed files these under "Airport Closures", which is how a
+            # NOTAM restricting transient GA parking came to read as LAX being
+            # shut. They are advisories about the field, not the state of it.
+            body = _nas_notam_text(ff.get("simpleText") or ff.get("text"))
+            add(code, _nas_entry(
+                kind="notam", label="NOTAM", ends=ff.get("endTime") or "",
+                starts=ff.get("startTime") or "", reason=body, text=body,
+                caption=_nas_until(ff.get("endTime"))))
+
+    return out
+
 
 def _nas_parse(xml):
+    """The older XML feed, kept as the fallback. It reports the same programs
+    without their scope, so the lines it produces name no facilities and say
+    only what this feed actually knows."""
     root = ET.fromstring(xml)
     out = {}
 
@@ -3699,23 +4077,24 @@ def _nas_parse(xml):
             out.setdefault(code.strip().upper(), []).append(entry)
 
     for group in root.findall("Delay_type"):
-        name = (group.findtext("Name") or "").strip()
         for gd in group.iter("Ground_Delay"):
-            add(gd.findtext("ARPT"), {
-                "kind": "ground_delay", "label": "Ground delay program",
-                "reason": (gd.findtext("Reason") or "").strip(),
-                "detail": "average %s, up to %s" % ((gd.findtext("Avg") or "?").strip(),
-                                                    (gd.findtext("Max") or "?").strip()),
-            })
+            detail = "average %s, up to %s" % ((gd.findtext("Avg") or "?").strip(),
+                                               (gd.findtext("Max") or "?").strip())
+            reason = (gd.findtext("Reason") or "").strip()
+            add(gd.findtext("ARPT"), _nas_entry(
+                kind="ground_delay", label="Ground delay program",
+                scope="arrivals", text="arrivals delayed", detail=detail,
+                reason=reason, caption=_nas_caption(detail, reason, HELD_AT_ORIGIN)))
         # Ground stops are absent from the feed whenever none are running, so
         # this branch is usually dead - which is exactly when it must not break.
         for gs in group.iter("Program"):
-            add(gs.findtext("ARPT"), {
-                "kind": "ground_stop", "label": "Ground stop",
-                "reason": (gs.findtext("Reason") or "").strip(),
-                "detail": ("until %s" % gs.findtext("End_Time").strip())
-                          if gs.findtext("End_Time") else "",
-            })
+            end = (gs.findtext("End_Time") or "").strip()
+            reason = (gs.findtext("Reason") or "").strip()
+            add(gs.findtext("ARPT"), _nas_entry(
+                kind="ground_stop", label="Ground stop", scope="arrivals",
+                text="arrivals held" + (" until %s" % end if end else ""),
+                detail=("until %s" % end) if end else "", reason=reason,
+                caption=_nas_caption(reason, HELD_AT_ORIGIN)))
         for d in group.iter("Delay"):
             ad = d.find("Arrival_Departure")
             kind = (ad.get("Type") or "").strip().lower() if ad is not None else ""
@@ -3725,28 +4104,35 @@ def _nas_parse(xml):
                                      (ad.findtext("Max") or "?").strip())
                 trend = (ad.findtext("Trend") or "").strip()
                 detail = span + (", %s" % trend.lower() if trend else "")
-            add(d.findtext("ARPT"), {
-                "kind": "delay",
-                "label": "%s delays" % (kind.capitalize() or "General"),
-                "reason": (d.findtext("Reason") or "").strip(),
-                "detail": detail,
-            })
+            reason = (d.findtext("Reason") or "").strip()
+            add(d.findtext("ARPT"), _nas_entry(
+                kind="delay", label="%s delays" % (kind.capitalize() or "General"),
+                detail=detail, text=detail, reason=reason, caption=reason))
         for c in group.iter("Airport"):
             if c.findtext("ARPT") is None:
                 continue
+            reason = (c.findtext("Reason") or "").strip()
             reopen = (c.findtext("Reopen") or "").strip().rstrip(".")
-            add(c.findtext("ARPT"), {
-                "kind": "closure", "label": "Airport closure",
-                "reason": (c.findtext("Reason") or "").strip(),
-                "detail": ("reopens %s" % reopen) if reopen else "",
-            })
-        if name and not out:
-            continue
+            # A reason opening with "!" is raw NOTAM text, which this list mixes
+            # in alongside real closures. Reported as what it is.
+            if reason.startswith("!"):
+                body = _nas_notam_text(reason)
+                add(c.findtext("ARPT"), _nas_entry(
+                    kind="notam", label="NOTAM", reason=body, text=body))
+                continue
+            detail = ("reopens %s" % reopen) if reopen else ""
+            add(c.findtext("ARPT"), _nas_entry(
+                kind="closure", label="Airport closure", detail=detail,
+                text=detail, reason=reason, caption=reason))
     return out
 
 
 def fetch_nas_status(refresh=False):
-    """The whole national picture, cached. Returns None if it cannot be had."""
+    """The whole national picture, cached. Returns None if it cannot be had.
+
+    Two feeds, same host: the dashboard JSON first because it carries a
+    program's scope, the older XML behind it because a feed that answers with
+    less is still better than reporting nothing."""
     _load_build_modules()
     try:
         age = time.time() - NAS_CACHE.stat().st_mtime
@@ -3754,17 +4140,23 @@ def fetch_nas_status(refresh=False):
             return json.loads(NAS_CACHE.read_text())
     except (OSError, ValueError):
         pass
+    airports, feed = None, ""
     try:
-        xml = Http.get(NAS_STATUS_URL, timeout=30, retries=2)
-        data = {"updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "airports": _nas_parse(xml)}
+        airports = _nas_parse_events(Http.json(NAS_EVENTS_URL, timeout=30, retries=2))
+        feed = "airport-events"
     except Exception:
-        # Serve a stale copy rather than nothing; the FAA being unreachable is
-        # not evidence that an airport is running normally.
         try:
-            return json.loads(NAS_CACHE.read_text())
-        except (OSError, ValueError):
-            return None
+            airports = _nas_parse(Http.get(NAS_STATUS_URL, timeout=30, retries=2))
+            feed = "airport-status-information"
+        except Exception:
+            # Serve a stale copy rather than nothing; the FAA being unreachable
+            # is not evidence that an airport is running normally.
+            try:
+                return json.loads(NAS_CACHE.read_text())
+            except (OSError, ValueError):
+                return None
+    data = {"updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "feed": feed, "airports": airports}
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = NAS_CACHE.with_suffix(".part")
     tmp.write_text(json.dumps(data))
@@ -3840,9 +4232,15 @@ def cmd_status(args):
             print("\nNo delays or closures reported by the FAA.")
         for item in result["items"]:
             print("\n%s%s" % (item["label"],
-                              "  (%s)" % item["detail"] if item["detail"] else ""))
-            if item["reason"]:
-                print("  %s" % item["reason"])
+                              "  %s" % item["text"] if item.get("text") else ""))
+            left = _nas_relative(item.get("ends"))
+            if left:
+                print("  %s" % left)
+            caption = item.get("caption") or item.get("reason")
+            if caption and caption != item.get("text"):
+                print("  %s" % caption)
+            if item.get("url"):
+                print("  %s" % item["url"])
         return
 
     data = fetch_nas_status(refresh=args.refresh)
@@ -3857,7 +4255,7 @@ def cmd_status(args):
     for code in sorted(airports):
         for item in airports[code]:
             print("%-5s %-22s %s" % (code, item["label"],
-                                     item["detail"] or item["reason"][:60]))
+                                     (item.get("text") or item["reason"])[:70]))
 
 
 def live_weather(rec, offline=False):
@@ -3899,7 +4297,7 @@ def cmd_live(args):
     print(json.dumps({
         "ident": display_id(rec),
         "weather": live_weather(rec),
-        "tfr": tfrs_for_state(rec["state"]),
+        "tfr": tfrs_near(rec),
         "status": airport_status(rec),
     }, default=str))
 
@@ -3969,7 +4367,7 @@ def cmd_panel(args):
             "weather": weather.get("summary", ""),
         },
         "weather": weather,
-        "tfr": (tfrs_for_state(rec["state"]) if not args.no_live
+        "tfr": (tfrs_near(rec) if not args.no_live
                 else {"available": False, "tfrs": []}),
         "runways": {
             "runways": runways,
@@ -4125,9 +4523,8 @@ def main(argv=None):
 
     sp = sub.add_parser("tfr", help="active TFRs near an airport")
     sp.add_argument("airport", nargs="?")
-    sp.add_argument("--radius", type=float, default=100.0, help="nautical miles")
-    sp.add_argument("--no-geometry", action="store_true",
-                    help="skip per-TFR detail fetches (faster, state filter only)")
+    sp.add_argument("--radius", type=float, default=TFR_RADIUS_NM,
+                    help="nautical miles (default %g)" % TFR_RADIUS_NM)
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_tfr)
 

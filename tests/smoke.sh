@@ -88,9 +88,46 @@ fi
 # FAA delay and closure reporting. Which airports are affected changes by the
 # minute, so these assert the plumbing and the honesty rules, never a delay.
 check "national status feed"  '"airports"'  $APT status --json
+check "status names its feed" '"feed"'      $APT status --json
 check "quiet field says so"   "No delays or closures reported by the FAA." $APT status POU
 check "non-US has no FAA status" "outside the US" $APT status EGLL
 check "live payload has status"  '"status"'  $APT live POU
+
+# A ground stop holds traffic bound for the field, at the field it is leaving
+# from. Whenever one is running, the line has to say so and say who is held -
+# reporting it as a bare "Ground stop" is what made it read as a closed airport.
+gs="$($APT status --json | python3 -c 'import json,sys
+d = json.load(sys.stdin)["airports"]
+for code, items in sorted(d.items()):
+    for it in items:
+        if it["kind"] in ("ground_stop", "ground_delay"):
+            print(code, "|", it["text"], "|", it["caption"], "|", it["url"]); raise SystemExit
+print("none running")')"
+case "$gs" in
+  "none running") echo "skip no ground stop or delay running" ;;
+  *"the field is open"*) echo "ok   a running program says the field is open"; pass=$((pass+1)) ;;
+  *) printf 'FAIL a running program says the field is open\n     got:    %s\n' "$gs"; fail=$((fail+1)) ;;
+esac
+case "$gs" in
+  "none running"|*"arrivals"*) : ;;
+  *) printf 'FAIL a running program names who is held\n     got:    %s\n' "$gs"; fail=$((fail+1)) ;;
+esac
+
+# Panel rows are rich text, so escaping is not optional.
+if command -v node >/dev/null 2>&1; then
+  if node tests/escaping.js >/dev/null 2>&1; then
+    echo "ok   markup escaping"; pass=$((pass+1))
+  else
+    echo "FAIL markup escaping"; node tests/escaping.js; fail=$((fail+1))
+  fi
+fi
+
+# TFR distance maths, offline and independent of what is flying today.
+if python3 tests/geometry.py >/dev/null 2>&1; then
+  echo "ok   TFR distance maths"; pass=$((pass+1))
+else
+  echo "FAIL TFR distance maths"; python3 tests/geometry.py; fail=$((fail+1))
+fi
 
 # The favoured-runway sum needs numbers, not the wind sentence, and a pattern
 # altitude has to exist even where the FAA prints none.
@@ -125,7 +162,25 @@ check "ambiguous name"          "matches several" $APT info Springfield
 
 # Live services.
 check "METAR"                   "KATL"           $APT wx KATL
-check "TFR list"                "Active TFRs"    $APT tfr KPOU --no-geometry
+check "TFR list"                "Active TFRs within" $APT tfr KPOU
+
+# Both TFR detail URLs 404'd once already, and the failure is invisible from
+# outside: a TFR nobody can locate is simply never reported as near you. So
+# this asserts the geometry actually parses, without pinning today's list -
+# which airports have a TFR changes hourly, that most of them have a published
+# shape does not. The rest are the standing national notices, which have none.
+located="$($APT tfr KEWR --json | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+total, national = d["checked"], d["nationwide"] + d["unlocated"]
+print("%d of %d located" % (total - national, total))
+raise SystemExit(0 if total and (total - national) > total * 0.5 else 1)')"
+if [[ $? -eq 0 ]]; then
+  echo "ok   TFR geometry parses ($located)"; pass=$((pass+1))
+else
+  echo "FAIL TFR geometry parses ($located)"; fail=$((fail+1))
+fi
+check "TFRs carry a distance"   '"distance_nm"'  $APT tfr KEWR --radius 3000 --json
+check "TFRs link per NOTAM"     "tfr.faa.gov/tfr3/?page=detail_" $APT tfr KEWR --radius 3000
 
 # Nearby filters to usable destinations.
 check "nearby excludes helipads" "SKY ACRES"     $APT nearby KPOU --radius 30 --min-runway 2500

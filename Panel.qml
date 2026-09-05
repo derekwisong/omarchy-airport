@@ -1323,16 +1323,15 @@ Item {
                     visible: Model.outlookSegments(root.outlook).length > 0
                   }
 
-                  // Delays and TFRs are not weather. Without a header of their
-                  // own they read as the tail of the block above.
+                  // Advisories are not weather. Without a header of their own
+                  // they read as the tail of the block above. One heading over
+                  // both because a ground stop, a NOTAM and a TFR are the same
+                  // question to whoever is reading: is anything in my way?
                   PanelSectionHeader {
                     visible: !!(root.status && root.status.available)
-                      || !!Model.tfrLine(root.tfr, root.header ? root.header.us : true)
+                      || Model.tfrLines(root.tfr, root.header ? root.header.us : true).length > 0
                       || !!(root.weather && root.weather.pending)
-                    // Spelled out here because the Summary is the page a
-                    // non-pilot reads; "TFR" is fine in the line below it,
-                    // where the header has just said what it stands for.
-                    text: "DELAYS & TEMPORARY FLIGHT RESTRICTIONS"
+                    text: "ADVISORIES"
                     foreground: Color.menu.text
                   }
 
@@ -1360,14 +1359,17 @@ Item {
                       required property var modelData
                       width: parent.width
                       wrapMode: Text.WordWrap
-                      textFormat: Text.PlainText
-                      text: (modelData.label ? modelData.label + " — " : "")
-                        + modelData.text
+                      // Rich text for the advisory link only; every part of it
+                      // is escaped in Model.statusLines.
+                      textFormat: Text.RichText
+                      text: modelData.html
                       color: modelData.alert ? Color.menu.text : Color.muted
+                      linkColor: Color.accent
                       font.family: Style.font.family
                       font.pixelSize: modelData.alert ? Style.font.body
                                                       : Style.font.caption
                       font.bold: modelData.alert === true
+                      onLinkActivated: function (link) { root.openLink(link) }
                     }
                   }
 
@@ -1377,18 +1379,25 @@ Item {
                     visible: Model.statusLines(root.status).length > 0
                   }
 
-                  Text {
-                    visible: !!Model.tfrLine(root.tfr, root.header ? root.header.us : true)
-                    width: parent.width
-                    wrapMode: Text.WordWrap
-                    textFormat: Text.RichText
-                    text: Model.tfrLine(root.tfr, root.header ? root.header.us : true)
-                      + "   <a href='https://tfr.faa.gov/tfr3/?page=list' style='color:"
-                      + Color.accent + "'>TFR list</a>"
-                    color: Color.muted
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                    onLinkActivated: function (link) { root.openLink(link) }
+                  // Nearest first, each linked to the FAA page for it, with
+                  // a muted tail for what these rows leave out.
+                  Repeater {
+                    model: Model.tfrLines(root.tfr, root.header ? root.header.us : true)
+                    delegate: Text {
+                      required property var modelData
+                      width: parent.width
+                      wrapMode: Text.WordWrap
+                      // Escaped in Model.tfrLines; rich text is for the link.
+                      textFormat: Text.RichText
+                      text: modelData.html
+                      color: modelData.alert ? Color.menu.text : Color.muted
+                      linkColor: Color.accent
+                      font.family: Style.font.family
+                      font.pixelSize: modelData.alert ? Style.font.body
+                                                      : Style.font.caption
+                      font.bold: modelData.alert === true
+                      onLinkActivated: function (link) { root.openLink(link) }
+                    }
                   }
 
                   Item { width: 1; height: Style.space(4) }
