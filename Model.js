@@ -647,3 +647,25 @@ function isFavouredEnd(row, runwayData, weather) {
   var best = favouredEnd(runwayData, weather)
   return !!best && best.id === row.id
 }
+
+
+// ---- putting data into markup ---------------------------------------------
+// A few Text items use Text.RichText so a row can carry a link. Anything
+// interpolated into one is markup, not text: an OpenStreetMap place is named
+// by whoever added it, and a name containing a tag would be rendered as one.
+
+function escapeHtml(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+// Only http(s) may reach an href. A file: or javascript: URL arriving from
+// mapped data would otherwise be a link the panel drew and vouched for.
+function safeUrl(u) {
+  var s = String(u === null || u === undefined ? "" : u)
+  return /^https?:\/\//i.test(s) ? s.replace(/'/g, "%27") : ""
+}

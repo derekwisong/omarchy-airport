@@ -97,6 +97,16 @@ check "live payload has status"  '"status"'  $APT live POU
 check "numeric wind exposed"  '"wind_dir"'   $APT panel KHPN --no-record
 check "standard TPA computed" '"pattern_altitude_standard"' $APT panel KHPN --no-record
 
+# Markup and URL handling for data that arrives from OpenStreetMap. Node is
+# not a dependency of the plugin, so this runs only where it happens to exist.
+if command -v node >/dev/null 2>&1; then
+  if node tests/escaping.js >/dev/null 2>&1; then
+    echo "ok   markup and urls from mapped data are neutralised"; pass=$((pass+1))
+  else
+    echo "FAIL escaping regressed:"; node tests/escaping.js 2>&1 | head -6; fail=$((fail+1))
+  fi
+fi
+
 # Cycle currency must always be stated.
 check "cycle stamped"           "NASR cycle 2026" $APT info KPOU
 check "not-for-navigation"      "NOT FOR NAVIGATION" $APT info KPOU

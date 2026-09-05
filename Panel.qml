@@ -374,6 +374,9 @@ Item {
   function openLink(url) {
     if (!url) return
     var text = String(url)
+    // Nothing but http(s) is ever handed to the desktop. The editor and
+    // reload links are wired to their own handlers, not to this one.
+    if (!/^https?:\/\//i.test(text)) return
     if (root.chartViewerAvailable
         && /^https:\/\/[a-z.]*faa\.gov\/.*\.pdf$/i.test(text)) openChart(text)
     else Qt.openUrlExternally(text)
@@ -1027,8 +1030,9 @@ Item {
                   delegate: Text {
                     required property var modelData
                     textFormat: Text.RichText
-                    text: "<a href='" + modelData.url + "' style='color:"
-                      + Color.accent + ";text-decoration:none'>" + modelData.label + "</a>"
+                    text: "<a href='" + Model.safeUrl(modelData.url) + "' style='color:"
+                      + Color.accent + ";text-decoration:none'>"
+                      + Model.escapeHtml(modelData.label) + "</a>"
                     font.family: Style.font.family
                     font.pixelSize: Style.font.bodySmall
                     onLinkActivated: function (link) { root.openLink(link) }
@@ -1796,13 +1800,14 @@ Item {
                             width: body.width * 0.42
                             elide: Text.ElideRight
                             textFormat: modelData.url ? Text.RichText : Text.PlainText
-                            text: modelData.url
-                              ? ("<a href='" + modelData.url + "' style='color:"
+                            text: Model.safeUrl(modelData.url)
+                              ? ("<a href='" + Model.safeUrl(modelData.url)
+                                 + "' style='color:"
                                  + (modelData.kind === "lounge" ? Color.accent : Color.menu.text)
                                  + ";text-decoration:"
                                  + (rowHover.hovered ? "underline" : "none") + "'>"
-                                 + modelData.name + "</a>")
-                              : modelData.name
+                                 + Model.escapeHtml(modelData.name) + "</a>")
+                              : Model.escapeHtml(modelData.name)
                             color: Color.menu.text
                             font.family: Style.font.family
                             font.pixelSize: Style.font.bodySmall
@@ -1831,8 +1836,8 @@ Item {
                           Text {
                             visible: rowHover.hovered && !!modelData.osm
                             textFormat: Text.RichText
-                            text: "<a href='" + modelData.osm + "' style='color:"
-                              + Color.muted + "'>osm</a>"
+                            text: "<a href='" + Model.safeUrl(modelData.osm)
+                              + "' style='color:" + Color.muted + "'>osm</a>"
                             font.family: Style.font.family
                             font.pixelSize: Style.font.caption
                             onLinkActivated: function (link) { root.openLink(link) }
@@ -2037,8 +2042,9 @@ Item {
                       leftPadding: modelData.heading ? 0
                         : (modelData.sub ? Style.space(10) : Style.space(24))
                       textFormat: modelData.url ? Text.RichText : Text.PlainText
-                      text: modelData.url
-                        ? (modelData.label + "   <a href='" + modelData.url
+                      text: Model.safeUrl(modelData.url)
+                        ? (Model.escapeHtml(modelData.label) + "   <a href='"
+                           + Model.safeUrl(modelData.url)
                            + "' style='color:" + Color.accent + "'>PDF</a>")
                         : modelData.label
                       color: modelData.heading ? Color.menu.selectedText
