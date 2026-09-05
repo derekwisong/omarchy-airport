@@ -1325,7 +1325,10 @@ Item {
                     visible: !!(root.status && root.status.available)
                       || !!Model.tfrLine(root.tfr, root.header ? root.header.us : true)
                       || !!(root.weather && root.weather.pending)
-                    text: "DELAYS & TFRs"
+                    // Spelled out here because the Summary is the page a
+                    // non-pilot reads; "TFR" is fine in the line below it,
+                    // where the header has just said what it stands for.
+                    text: "DELAYS & TEMPORARY FLIGHT RESTRICTIONS"
                     foreground: Color.menu.text
                   }
 
