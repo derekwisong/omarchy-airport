@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# Copy this plugin into the Omarchy user plugin directory and enable it.
-# Saving files there hot-reloads the shell, so re-running this applies edits.
+# Development helper. Copies the working tree into the Omarchy user plugin
+# directory and enables it, so an uncommitted change can be tried without
+# pushing anywhere.
+#
+# This is NOT how the plugin is installed. That is:
+#
+#   omarchy plugin add https://github.com/derekwisong/omarchy-airport.git --enable
+#
+# which clones and validates the repo - it never executes anything out of the
+# plugin, this script included. What that leaves behind is a git checkout, so
+# `omarchy plugin update` works on it. What this script leaves behind is a copy,
+# so it does not.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -12,7 +22,7 @@ cp -r manifest.json Model.js *.qml scripts "$DEST/"
 rm -rf "$DEST/scripts/__pycache__"
 
 omarchy plugin validate "$DEST"
-echo "installed $ID -> $DEST"
+echo "installed $ID -> $DEST  (dev copy, not git-managed)"
 
 # The shell only learns about a brand-new plugin directory when it rescans, and
 # `plugin enable` refuses an id it has never heard of. Rescanning first makes a

@@ -12,17 +12,15 @@ airport. Everything comes from public, unauthenticated sources — no API keys.
 ## Install
 
 ```bash
-git clone <this-repo> && cd airport-info-plugin
-./install.sh              # copies into ~/.config/omarchy/plugins/ and enables it
+omarchy plugin add https://github.com/derekwisong/omarchy-airport.git --enable
 ```
 
-Or from a git URL, the normal Omarchy way:
+That is the whole of it. Omarchy clones the repo, checks the manifest against its schema and
+enables the plugin; it never runs anything out of the plugin, which is why there is no install
+script in that path. Because the result is a git checkout, `omarchy plugin update` works on it
+later.
 
-```bash
-omarchy plugin add https://github.com/<you>/airport-info-plugin.git --enable
-```
-
-Either way there is nothing else to run. The panel builds its data cache the first time you
+There is nothing else to run. The panel builds its data cache the first time you
 open it, showing what it is doing while it works, and rebuilds it in the background when the
 FAA cycle rolls over. To build it ahead of time instead:
 
@@ -415,8 +413,14 @@ was logged anywhere. `airportData` is the name now.
 on `command` may not have propagated when you start the process in the same block, so it runs
 the previous (or empty) argument list.
 
+`install.sh` copies the working tree into `~/.config/omarchy/plugins/` and enables it, which
+is how to try a change you have not committed. It is a development tool, not the install
+path: it copies rather than clones, so what it leaves behind is not a git checkout and
+`omarchy plugin update` cannot act on it. To go back to an updatable install, remove the
+directory and `omarchy plugin add` the repo again.
+
 ```bash
-./tests/smoke.sh              # 69 checks against the engine, network required
+./tests/smoke.sh              # 94 checks against the engine, network required
 ./tests/smoke.sh --with-osm   # adds the Overpass concourse check
 omarchy plugin validate .     # manifest and entry points
 ```
