@@ -1862,6 +1862,63 @@ Item {
                   width: parent.width
                   spacing: Style.space(1)
 
+                  // Which way the wind is blowing, in the one form that
+                  // matters on this page: which end to use.
+                  Text {
+                    visible: Model.favouredLine(root.runwayData, root.weather) !== ""
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.PlainText
+                    text: Model.favouredLine(root.runwayData, root.weather)
+                    color: Color.menu.text
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: true
+                  }
+
+                  Item {
+                    width: 1
+                    height: Style.space(8)
+                    visible: Model.favouredLine(root.runwayData, root.weather) !== ""
+                  }
+
+                  // The table had no labels at all: "6,549' × 150'" and "150°T"
+                  // are obvious to a pilot and opaque to everyone else.
+                  Row {
+                    width: parent.width
+                    spacing: Style.space(10)
+                    visible: !!(root.runwayData
+                                && (root.runwayData.runways || []).length)
+
+                    Text {
+                      width: Style.space(74)
+                      text: "RUNWAY"
+                      color: Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                      font.letterSpacing: 1.2
+                    }
+                    Text {
+                      width: Style.space(120)
+                      text: "SIZE"
+                      color: Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                      font.letterSpacing: 1.2
+                    }
+                    Text {
+                      width: parent.width - Style.space(214)
+                      text: "SURFACE, LIGHTING AND APPROACH AIDS"
+                      color: Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                      font.letterSpacing: 1.2
+                    }
+                  }
+
                   Repeater {
                     model: Model.runwayRows(root.runwayData)
                     delegate: Column {
@@ -1878,10 +1935,15 @@ Item {
                                                                 : Text.AlignRight
                           textFormat: Text.PlainText
                           text: modelData.id
-                          color: modelData.runway ? Color.menu.text : Color.muted
+                          color: Model.isFavouredEnd(modelData, root.runwayData,
+                                                     root.weather)
+                            ? Color.accent
+                            : (modelData.runway ? Color.menu.text : Color.muted)
                           font.family: "monospace"
                           font.pixelSize: Style.font.bodySmall
                           font.bold: modelData.runway === true
+                            || Model.isFavouredEnd(modelData, root.runwayData,
+                                                   root.weather)
                         }
                         Text {
                           width: Style.space(120)
@@ -1932,13 +1994,23 @@ Item {
                   PanelSeparator { width: parent.width; foreground: Color.menu.text }
                   Item { width: 1; height: Style.space(8) }
 
+                  // Published if the FAA prints one; otherwise the standard
+                  // 1,000 ft above the field, labelled as the convention it is
+                  // rather than passed off as data for this airport.
                   Text {
-                    visible: !!(root.runwayData && root.runwayData.pattern_altitude)
+                    visible: !!(root.runwayData
+                                && (root.runwayData.pattern_altitude
+                                    || root.runwayData.pattern_altitude_standard))
                     width: parent.width
                     wrapMode: Text.WordWrap
                     textFormat: Text.PlainText
-                    text: root.runwayData
-                      ? "Pattern altitude   " + root.runwayData.pattern_altitude : ""
+                    text: !root.runwayData ? ""
+                      : (root.runwayData.pattern_altitude
+                         ? "Pattern altitude   " + root.runwayData.pattern_altitude
+                         : "Pattern altitude   "
+                           + root.runwayData.pattern_altitude_standard
+                           + "   (standard 1,000 ft above the field; none published "
+                           + "for this airport)")
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.bodySmall

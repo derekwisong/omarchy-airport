@@ -92,6 +92,11 @@ check "quiet field says so"   "No delays or closures reported by the FAA." $APT 
 check "non-US has no FAA status" "outside the US" $APT status EGLL
 check "live payload has status"  '"status"'  $APT live POU
 
+# The favoured-runway sum needs numbers, not the wind sentence, and a pattern
+# altitude has to exist even where the FAA prints none.
+check "numeric wind exposed"  '"wind_dir"'   $APT panel KHPN --no-record
+check "standard TPA computed" '"pattern_altitude_standard"' $APT panel KHPN --no-record
+
 # Cycle currency must always be stated.
 check "cycle stamped"           "NASR cycle 2026" $APT info KPOU
 check "not-for-navigation"      "NOT FOR NAVIGATION" $APT info KPOU

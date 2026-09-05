@@ -584,3 +584,66 @@ function outlookLegend(outlook) {
   out.sort(function (a, b) { return rank(a.category) - rank(b.category) })
   return out
 }
+
+
+// ---- which runway the wind favours -----------------------------------------
+// METAR wind is true-north referenced and NASR's TRUE_ALIGNMENT is too, so
+// these compare directly. Runway *numbers* are magnetic - 34 at HPN points
+// 330 true - which is exactly why the sum uses the alignment and not the
+// number on the tarmac.
+
+function windComponents(trueAlign, windDir, windSpeed) {
+  var offset = ((windDir - trueAlign + 540) % 360) - 180   // -180..180
+  var rad = offset * Math.PI / 180
+  return {
+    head: windSpeed * Math.cos(rad),
+    cross: Math.abs(windSpeed * Math.sin(rad)),
+    fromRight: offset > 0
+  }
+}
+
+// The end with the most headwind. Null when there is nothing to favour: calm,
+// variable, or no report at all - all of which are silence rather than a guess.
+function favouredEnd(runwayData, weather) {
+  if (!runwayData || !weather || !weather.available) return null
+  var dir = weather.wind_dir, speed = weather.wind_speed
+  if (dir === null || dir === undefined || !(speed >= 3)) return null
+  var best = null
+  var runways = runwayData.runways || []
+  for (var i = 0; i < runways.length; i++) {
+    var ends = runways[i].ends || []
+    for (var j = 0; j < ends.length; j++) {
+      var align = parseFloat(ends[j].true_align)
+      if (!(align >= 0)) continue
+      var c = windComponents(align, dir, speed)
+      if (!best || c.head > best.head)
+        best = { id: ends[j].id, runway: runways[i].id, head: c.head,
+                 cross: c.cross, fromRight: c.fromRight }
+    }
+  }
+  // A runway with the wind behind it is not favoured, it is merely least bad.
+  return (best && best.head > 0) ? best : null
+}
+
+function favouredLine(runwayData, weather) {
+  var best = favouredEnd(runwayData, weather)
+  if (!best) {
+    if (weather && weather.available && !(weather.wind_speed >= 3))
+      return "Wind is light and variable — no runway is favoured."
+    return ""
+  }
+  var cross = Math.round(best.cross)
+  return "Wind favours runway " + best.id + " — headwind "
+    + Math.round(best.head) + " kt"
+    + (cross > 0 ? ", crosswind " + cross + " kt from the "
+                   + (best.fromRight ? "right" : "left") : ", no crosswind")
+}
+
+
+// True when this table row is the end the wind favours, so the table can mark
+// it without the caller recomputing the sum per row.
+function isFavouredEnd(row, runwayData, weather) {
+  if (!row || row.runway) return false
+  var best = favouredEnd(runwayData, weather)
+  return !!best && best.id === row.id
+}

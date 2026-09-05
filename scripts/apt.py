@@ -1466,6 +1466,17 @@ def pattern_altitude(conn, rec):
     return ""
 
 
+def standard_pattern_altitude(rec):
+    """1,000 ft above the field, which is what to fly when nothing is published.
+
+    Kept apart from pattern_altitude() on purpose: one is what the FAA prints
+    for this airport, the other is the convention that applies in its absence,
+    and a reader is entitled to know which of the two they are looking at."""
+    if rec["elev"] is None:
+        return ""
+    return fmt_ft(int(round(rec["elev"] / 100.0) * 100) + 1000) + " MSL"
+
+
 def get_attendance(conn, rec):
     """When the field is actually attended - the thing that decides a GA trip."""
     if rec["source"] != "faa":
@@ -1790,8 +1801,24 @@ def humanize_weather(metar, taf, elev):
     if metar.get("reportTime"):
         observed = str(metar["reportTime"])[11:16] + "Z"
 
+    # METAR wind is true-north referenced, and so is NASR's runway
+    # TRUE_ALIGNMENT - which is why the favoured-runway sum can compare them
+    # directly and never has to reason about magnetic variation.
+    wind_dir = None
+    if direction not in (None, 0) and str(direction).upper() != "VRB":
+        try:
+            wind_dir = int(direction)
+        except (TypeError, ValueError):
+            wind_dir = None
+    try:
+        wind_speed = int(speed) if speed else 0
+    except (TypeError, ValueError):
+        wind_speed = 0
+
     return {
         "available": True,
+        "wind_dir": wind_dir,
+        "wind_speed": wind_speed,
         "summary": summary,
         "category": metar.get("fltCat", ""),
         "category_text": CATEGORY_TEXT.get(metar.get("fltCat", ""), ""),
@@ -3871,6 +3898,7 @@ def cmd_panel(args):
         "runways": {
             "runways": runways,
             "pattern_altitude": pattern_altitude(conn, rec),
+            "pattern_altitude_standard": standard_pattern_altitude(rec),
             "diagram": diagram,
         },
         "procedures": procedures,
@@ -3912,6 +3940,7 @@ def cmd_brief(args):
         "runways": get_runways(conn, rec),
         "frequencies": get_freqs(conn, rec),
         "pattern_altitude": pattern_altitude(conn, rec),
+        "pattern_altitude_standard": standard_pattern_altitude(rec),
         "charts": get_charts(conn, rec),
         "procedures": get_procedures(conn, rec),
         "remarks": get_remarks(conn, rec),
