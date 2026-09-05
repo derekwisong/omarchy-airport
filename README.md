@@ -78,7 +78,7 @@ the approach plates:
 
 | Page | What's there |
 |---|---|
-| **Summary** | Location, elevation, conditions in plain English, **FAA delays and closures**, longest runway and surface, control tower and its hours, airspace class, fuel, attended hours, landing fee, and links out — AirNav, driving directions, SkyVector, FAA record, NOTAM search, LiveATC |
+| **Summary** | Location, elevation, conditions in plain English, **FAA delays and closures**, a forecast band, longest runway and surface, control tower and its hours, airspace class, fuel, attended hours, landing fee, and links out — AirNav, driving directions, SkyVector, FAA, LiveATC |
 | **Weather** | Flight category spelled out, wind, visibility, sky, **ceiling**, temperature, dew point, altimeter, pressure and density altitude, civil twilight and sunrise/sunset, a **forecast timeline** read out of the TAF, then the raw METAR and TAF |
 | **Amenities** | Food, shops and lounges as a table grouped by concourse, filterable, each name linking to its Google Maps listing |
 | **Runways** | An aligned table: every runway per end — lengths, surface, lighting, alignment, ILS, VGSI, displaced thresholds, LDA and obstructions — plus pattern altitude and the diagram |
@@ -351,8 +351,9 @@ mapped POIs into Concourses A–F, T and the Domestic Terminal with none left ov
 ## What it deliberately does not do
 
 - **No NOTAMs.** There is no key-free source — `notams.aim.faa.gov` returns 403 to non-browser
-  clients and `external-api.faa.gov` returns 401 — so the plugin does not pretend to have them.
-  The Summary links out to the official NOTAM search instead.
+  clients and `external-api.faa.gov` returns 401 — so the plugin does not pretend to have them,
+  and does not link to a search that would imply it had checked. Every pilot-facing output
+  says to get an official briefing.
 - **FBO names and fuel prices come from AirNav**, scraped on demand for one airport at a
   time and cached for 24 hours. Their robots.txt disallows only `/cgi-bin/`, so `/airport/`
   is fair game, but this is still someone else's site: don't bulk-crawl it, and expect the
