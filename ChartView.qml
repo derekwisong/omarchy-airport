@@ -7,12 +7,14 @@ import qs.Ui
 
 // The chart viewer lives in its own file because of these two imports.
 //
-// QtQuick.Pdf ships in qt6-webengine (282 MiB) and Qt5Compat.GraphicalEffects
-// in qt6-5compat; neither is a dependency of Omarchy or Quickshell, so neither
-// is present on a stock install. A failed import takes down the whole file it
-// appears in - if these sat in Panel.qml, the entire plugin would fail to load
-// on most machines. Loaded through a Loader instead, a missing module costs
-// only the inline viewer, and charts fall back to opening externally.
+// QtQuick.Pdf ships in qt6-webengine and Qt5Compat.GraphicalEffects in
+// qt6-5compat. A stock Omarchy install has both, though only by accident:
+// kdenlive is in omarchy-base.packages and drags them in through purpose and
+// kwallet. Nothing declares them, so nothing keeps them - drop kdenlive and
+// they go too. A failed import takes down the whole file it appears in, so if
+// these sat in Panel.qml that day would take the entire plugin with it.
+// Behind a Loader it costs the inline viewer and nothing else, and charts open
+// in a browser instead.
 
 // ---- chart viewer ----------------------------------------------
 // Sits over the card rather than replacing it, so backing out with Esc

@@ -14,8 +14,9 @@ omarchy-shell shell toggle derekwisong.airport
 
 Needs Python 3 — standard library only, nothing to `pip install`, nothing to install as root.
 
-Approach plates and diagrams are shown inside the panel where Qt's PDF module is available,
-and open in your browser where it is not. Either way there is nothing to set up.
+Approach plates and diagrams are shown inside the panel, which a stock Omarchy install already
+has what it needs for. On a system missing Qt's PDF module they open in your browser instead,
+and nothing else changes.
 
 ### Reaching it
 
