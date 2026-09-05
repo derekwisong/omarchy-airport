@@ -1681,8 +1681,9 @@ Item {
                       && (!root.amenities.pois || root.amenities.pois.length === 0)
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    text: "Nothing mapped here. Small fields usually have no OpenStreetMap "
-                      + "coverage — that does not mean there is nothing on the field."
+                    // "Unknown", not "none": OpenStreetMap simply may not
+                    // cover this field, which is not the same as an empty one.
+                    text: "Unknown"
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.bodySmall
