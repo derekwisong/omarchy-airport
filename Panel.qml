@@ -1175,6 +1175,16 @@ Item {
 
                   Item { width: 1; height: Style.space(4) }
 
+                  // The Summary is the one page with no section headers, which
+                  // was fine when it was a single table. It is not fine now
+                  // that a coloured bar sits under it with nothing saying what
+                  // the colours are about.
+                  PanelSectionHeader {
+                    visible: Model.outlookSegments(root.outlook).length > 0
+                    text: "WEATHER"
+                    foreground: Color.menu.text
+                  }
+
                   // ---- forecast at a glance ----
                   // The same band as the Weather page, captioned so it reads
                   // without a licence: what the sky is doing now, when that
@@ -1307,6 +1317,16 @@ Item {
                     width: 1
                     height: Style.space(6)
                     visible: Model.outlookSegments(root.outlook).length > 0
+                  }
+
+                  // Delays and TFRs are not weather. Without a header of their
+                  // own they read as the tail of the block above.
+                  PanelSectionHeader {
+                    visible: !!(root.status && root.status.available)
+                      || !!Model.tfrLine(root.tfr, root.header ? root.header.us : true)
+                      || !!(root.weather && root.weather.pending)
+                    text: "DELAYS & TFRs"
+                    foreground: Color.menu.text
                   }
 
                   // The delay and TFR lines below arrive with the live fetch.
