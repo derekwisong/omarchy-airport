@@ -46,8 +46,26 @@ def _load_build_modules():
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-VERSION = "1.0.0"
-UA = "airport-info-plugin/%s (Claude Code plugin; contact: local user)" % VERSION
+def _version():
+    """The manifest is the one place a version is declared. Read it rather than
+    keeping a second copy here - the copy said 1.0.0 while the manifest said
+    3.0.0, and the User-Agent had been reporting the wrong one for two major
+    versions."""
+    try:
+        with open(Path(__file__).resolve().parent.parent / "manifest.json") as fh:
+            return json.load(fh).get("version") or "0"
+    except Exception:
+        return "0"
+
+
+VERSION = _version()
+# Name the software and nothing else. It said "Claude Code plugin", which is
+# not what this is - and AirNav's robots.txt gives anthropic-ai and ClaudeBot a
+# 240s crawl-delay, so the word invited a reading that was both wrong and
+# unhelpful. No URL and no contact either: this string is sent to every site
+# the plugin touches, on every user's machine, and none of them needs to be
+# told who the author is. The name is distinctive enough to look up.
+UA = "omarchy-airport/%s" % VERSION
 
 CACHE_DIR = Path(os.environ.get("AIRPORT_INFO_CACHE") or (Path.home() / ".cache" / "airport-info"))
 NOTES_DIR = Path(os.environ.get("AIRPORT_INFO_NOTES") or (Path.home() / ".airport-info" / "notes"))
