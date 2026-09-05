@@ -3,14 +3,7 @@
 Look up any of 19,411 US airports — and the rest of the world besides — without leaving your
 desktop. One summoned panel: type an identifier, a city or a state, and get the field.
 
-```
-POU  KPOU  VFR  elev 164'
-Hudson Valley Regional
-Poughkeepsie, NY · 4 mi S · Airport diagram
-Clear, 68°F, wind from the southeast (130°) at 3 kt.
-
-Summary  Weather  Amenities  Runways  Procedures  Frequencies  Services  Notes
-```
+![The Summary page](docs/summary.png)
 
 Built for someone who flies both seats: a private pilot who wants runway lengths, CTAF and
 density altitude, and a frequent flier who wants to know if ATL is IFR before leaving for the
@@ -221,6 +214,8 @@ thresholds, so they mean the same thing as the category on the current condition
 ```bash
 python3 scripts/apt.py outlook KORD
 ```
+
+![The forecast timeline on the Weather page](docs/weather.png)
 
 ### At a glance, on the Summary
 

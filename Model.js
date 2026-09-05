@@ -294,19 +294,14 @@ function linkRows(d) {
 
 // The front page: what this airport is and whether you can use it. Written for
 // a traveller and a pilot at once - no jargon, no performance numbers.
-function summaryRows(s, header, pending) {
+function summaryRows(s, header) {
   if (!s) return []
   var rows = []
   function add(k, v) { if (v) rows.push({ k: k, v: v }) }
 
-  add("Location", header ? header.where : "")
-  add("Elevation", header && header.elev !== null && header.elev !== undefined
-      ? feet(header.elev) : "")
-  // While the observation is still in flight the row holds its place rather
-  // than appearing from nowhere once it lands. It is marked pending so it can
-  // be drawn as the placeholder it is, not read as a value.
-  if (!s.weather && pending) rows.push({ k: "Conditions", v: "checking…", pending: true })
-  else add("Conditions", s.weather)
+  // Location, elevation and conditions are in the header, on every page. The
+  // Summary used to repeat all three word for word; it now starts with what
+  // the header does not already say.
 
   var runway = s.longest_runway
   if (runway) {
@@ -573,14 +568,19 @@ function outlookHeadline(outlook, tick) {
 function outlookLegend(outlook) {
   if (!outlook || !outlook.timeline) return []
   var seen = {}, out = []
-  var all = (outlook.timeline || []).concat(outlook.overlays || [])
+  // Timeline only. TEMPO and PROB groups are not drawn on the band, so listing
+  // their colours in its key points at something that is not there; the
+  // headline already calls those out in words.
+  var all = outlook.timeline || []
   for (var i = 0; i < all.length; i++) {
     var c = all[i].category
     if (!c || seen[c]) continue
     seen[c] = true
     out.push({ category: c, text: plainCategory(c) })
   }
+  // `order[c] || 9` put VFR last, because its rank is 0 and 0 is falsy.
   var order = { VFR: 0, MVFR: 1, IFR: 2, LIFR: 3 }
-  out.sort(function (a, b) { return (order[a.category] || 9) - (order[b.category] || 9) })
+  function rank(c) { return c in order ? order[c] : 9 }
+  out.sort(function (a, b) { return rank(a.category) - rank(b.category) })
   return out
 }

@@ -510,6 +510,28 @@ Item {
 
   // Flip the star immediately, persist in the background, and never reload the
   // rail: the list keeps its order and nothing redraws but the one glyph.
+  // Looking an airport up puts it in the rail, and until now nothing took it
+  // back out: a mistyped lookup sat there until twelve more pushed it off.
+  // Shift+Delete is the browser-history idiom for "forget this row", and it
+  // cannot be mistaken for editing the query.
+  function forgetSelected() {
+    if (root.searching || !root.selectedIdent) return
+    var list = root.railItems
+    var index = -1
+    for (var i = 0; i < list.length; i++)
+      if ((list[i].ident || list[i].id) === root.selectedIdent) { index = i; break }
+    // Land on the row that takes its place, or the one above if it was last.
+    var after = ""
+    if (index >= 0 && list.length > 1) {
+      var neighbour = index + 1 < list.length ? list[index + 1] : list[index - 1]
+      after = neighbour.ident || neighbour.id
+    }
+    forgetProcess.command = ["python3", root.engine, "recents", "remove",
+                             root.selectedIdent]
+    forgetProcess.running = true
+    root.selectedIdent = after
+  }
+
   function toggleFavourite(ident) {
     if (!ident) return
     var now = !root.isFavourite(ident)
@@ -628,6 +650,10 @@ Item {
     onExited: root.amenitiesLoading = false
   }
   Process { id: pinProcess }
+  Process {
+    id: forgetProcess
+    onExited: root.loadRecents()
+  }
   Process { id: editorProcess }
 
   Process {
@@ -748,6 +774,10 @@ Item {
                 if (root.tab === root.tabAmenities
                     && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) {
                   root.cycleTerminal(event.key === Qt.Key_Backtab ? -1 : 1)
+                  event.accepted = true
+                } else if (event.key === Qt.Key_Delete
+                           && (event.modifiers & Qt.ShiftModifier)) {
+                  root.forgetSelected()
                   event.accepted = true
                 } else if (event.key === Qt.Key_D && (event.modifiers & Qt.ControlModifier)) {
                   root.toggleFavourite(root.selectedIdent)
@@ -1109,8 +1139,7 @@ Item {
                   spacing: Style.space(5)
 
                   Repeater {
-                    model: Model.summaryRows(root.summary, root.header,
-                                                 !!(root.weather && root.weather.pending))
+                    model: Model.summaryRows(root.summary, root.header)
                     delegate: Row {
                       required property var modelData
                       visible: !!modelData.v
@@ -1287,7 +1316,7 @@ Item {
                     visible: !!(root.weather && root.weather.pending)
                     width: parent.width
                     textFormat: Text.PlainText
-                    text: "Checking FAA delays and TFRs…"
+                    text: "Checking conditions, delays and TFRs…"
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -2374,7 +2403,8 @@ Item {
           text: root.cacheRefreshing
             ? "Updating to FAA cycle " + root.expectedCycle + " in the background — "
               + root.buildLabel.toLowerCase()
-            : "↑↓ airport · ←→ page · "
+            : "↑↓ airport · ←→ page · Ctrl+D pin · "
+              + (root.searching ? "" : "Shift+Del forget · ")
               + (root.tab === root.tabAmenities
                  && Model.terminalChips(root.amenities).length ? "Tab concourse · " : "")
               + "PgUp/PgDn or Ctrl+↑↓ scroll · Esc close   —   not for navigation"

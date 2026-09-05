@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "derekwisong.airport",
   "name": "Airport",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "author": "Derek Wisong",
   "description": "Look up any airport - conditions, runways, procedures, FBOs and fuel prices, terminal food and lounges",
   "kinds": [
