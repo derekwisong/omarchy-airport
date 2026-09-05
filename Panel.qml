@@ -32,6 +32,10 @@ Item {
   property string loadingIdent: ""
   // The local record renders on its own; conditions and TFRs arrive after.
   property bool liveLoading: false
+  onLiveLoadingChanged: {
+    if (liveLoading) busyDelay.restart()
+    else if (loadingIdent === "") { busyDelay.stop(); showBusy = false }
+  }
   property bool showBusy: false
   property string currentIdent: ""   // what is loaded and displayed
   property string selectedIdent: ""  // what the highlight is on, may be ahead
@@ -519,13 +523,13 @@ Item {
   Timer {
     id: busyDelay
     interval: 250
-    onTriggered: root.showBusy = root.loadingIdent !== ""
+    onTriggered: root.showBusy = root.loadingIdent !== "" || root.liveLoading
   }
 
   onLoadingIdentChanged: {
     if (loadingIdent === "") {
       busyDelay.stop()
-      showBusy = false
+      showBusy = root.liveLoading
     } else {
       busyDelay.restart()
     }
@@ -1070,7 +1074,8 @@ Item {
                   spacing: Style.space(5)
 
                   Repeater {
-                    model: Model.summaryRows(root.summary, root.header)
+                    model: Model.summaryRows(root.summary, root.header,
+                                                 !!(root.weather && root.weather.pending))
                     delegate: Row {
                       required property var modelData
                       visible: !!modelData.v
@@ -1089,9 +1094,10 @@ Item {
                         wrapMode: Text.WordWrap
                         textFormat: Text.PlainText
                         text: modelData.v
-                        color: Color.menu.text
+                        color: modelData.pending ? Color.muted : Color.menu.text
                         font.family: Style.font.family
                         font.pixelSize: Style.font.bodySmall
+                        font.italic: modelData.pending === true
                         font.bold: modelData.accent === true
                       }
                     }
@@ -1121,6 +1127,20 @@ Item {
                   }
 
                   Item { width: 1; height: Style.space(4) }
+
+                  // The delay and TFR lines below arrive with the live fetch.
+                  // Without this the bottom of the page is simply blank and
+                  // then is not, with nothing to say which it was.
+                  Text {
+                    visible: !!(root.weather && root.weather.pending)
+                    width: parent.width
+                    textFormat: Text.PlainText
+                    text: "Checking FAA delays and TFRs…"
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.italic: true
+                  }
 
                   // ---- what the FAA is reporting right now ----
                   // Above the TFR line because a ground stop is the thing that

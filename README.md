@@ -254,6 +254,11 @@ Until the conditions arrive the panel says nothing about them, rather than showi
 weather station reports" — an answer that has not come back yet is not the same claim as an
 airport that has no station.
 
+It does say that it is waiting, though. The Conditions row holds its place as *checking…*
+instead of appearing from nowhere, a line stands in for the delay and TFR lines that arrive
+last, and the accent sliver under the tabs runs until the fetch lands. Silence about the
+weather and silence about whether anything is happening are different things.
+
 ## Recents
 
 There is no list to curate. Picking an airport — clicking it or pressing Enter — puts it at

@@ -289,7 +289,7 @@ function linkRows(d) {
 
 // The front page: what this airport is and whether you can use it. Written for
 // a traveller and a pilot at once - no jargon, no performance numbers.
-function summaryRows(s, header) {
+function summaryRows(s, header, pending) {
   if (!s) return []
   var rows = []
   function add(k, v) { if (v) rows.push({ k: k, v: v }) }
@@ -297,7 +297,11 @@ function summaryRows(s, header) {
   add("Location", header ? header.where : "")
   add("Elevation", header && header.elev !== null && header.elev !== undefined
       ? feet(header.elev) : "")
-  add("Conditions", s.weather)
+  // While the observation is still in flight the row holds its place rather
+  // than appearing from nowhere once it lands. It is marked pending so it can
+  // be drawn as the placeholder it is, not read as a value.
+  if (!s.weather && pending) rows.push({ k: "Conditions", v: "checking…", pending: true })
+  else add("Conditions", s.weather)
 
   var runway = s.longest_runway
   if (runway) {
