@@ -273,19 +273,33 @@ function tafLines(taf) {
 // live in the header for that reason: on the Runways page you are no less
 // likely to want AirNav than on the Summary. Links that belong to a single row
 // - a plate's PDF, a restaurant's map pin - stay with their row.
+// Where the airport goes when you leave, as a row of icons rather than a row
+// of words - seven labels took a line of the header to themselves, and the
+// header sits above every page.
+//
+// A glyph can only carry a link that has a natural picture. "AirNav" and
+// "SkyVector" do not, so the icons say what the destination is *for* - an
+// aeroplane for the field's own record, a compass for charts - and the name
+// itself is one hover away. Every glyph here was rendered and looked at before
+// it was chosen; the Material Design range of the shell's font has all of them.
 function linkRows(d) {
   var links = (d && d.links) || {}
-  var order = [["diagram", "Airport diagram"],
-               ["directions", "Directions"], ["airnav", "AirNav"],
-               ["skyvector", "SkyVector"], ["faa_nfdc", "FAA"],
-               ["weather", "Weather"],
+  // Written as the characters themselves, the way the shell's own widgets do:
+  // these live above the basic plane, where a \u escape cannot reach them.
+  var order = [["diagram", "Airport diagram", "󰦂"],
+               ["directions", "Directions", "󰍎"],
+               ["airnav", "AirNav", "󰀝"],
+               ["skyvector", "SkyVector", "󰆋"],
+               ["faa_nfdc", "FAA", "󰁰"],
+               ["weather", "Weather", "󰖐"],
                // Live tower audio belongs on the front page too, not only
                // beside the frequencies it goes with.
-               ["liveatc", "LiveATC"]]
+               ["liveatc", "LiveATC", "󰕾"]]
   var out = []
   for (var i = 0; i < order.length; i++) {
     var k = order[i][0]
-    if (links[k]) out.push({ label: order[i][1], url: links[k] })
+    if (links[k])
+      out.push({ label: order[i][1], url: links[k], icon: order[i][2] })
   }
   return out
 }

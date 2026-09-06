@@ -98,7 +98,10 @@
   the ICAO form, the place and the elevation share one muted line. The flight
   category was a filled pill, which made the one thing on the page that is only
   ever a hint shout louder than the airport's own name; it is a small coloured
-  dot now.
+  dot now. The links out - the diagram, AirNav, SkyVector, LiveATC and the
+  rest - are a row of icons on the top line between the name and the clock,
+  rather than a row of words with a line to themselves; each names itself on
+  hover. Six rows down to three.
 - `apt.py tfr` defaults to a 50 nm radius, sorts by distance and drops
   `--no-geometry`; geometry is the point of it and is now cached.
 

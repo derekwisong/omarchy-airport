@@ -1014,7 +1014,9 @@ Item {
               // row - ICAO, place, elevation - share one muted line.
               Item {
                 width: parent.width
-                height: Math.max(identText.implicitHeight, clockCol.implicitHeight)
+                height: Math.max(identText.implicitHeight,
+                                 Math.max(clockCol.implicitHeight,
+                                          linkRow.implicitHeight))
 
                 Text {
                   id: identText
@@ -1029,12 +1031,12 @@ Item {
                 }
 
                 // Reads across from the identifier rather than under it, and
-                // gives way to the clock rather than sliding beneath it.
+                // gives way to what is to its right rather than sliding under.
                 Text {
                   anchors.left: identText.right
                   anchors.leftMargin: Style.space(10)
-                  anchors.right: clockCol.left
-                  anchors.rightMargin: Style.space(12)
+                  anchors.right: linkRow.left
+                  anchors.rightMargin: Style.space(10)
                   anchors.baseline: identText.baseline
                   elide: Text.ElideRight
                   textFormat: Text.PlainText
@@ -1042,6 +1044,52 @@ Item {
                   color: Color.menu.text
                   font.family: Style.font.family
                   font.pixelSize: Style.font.title
+                }
+
+                // Where the airport goes when you leave. Seven words took a
+                // row of the header to themselves; seven glyphs fit in the
+                // space the top line was already wasting, between the name
+                // and the clock. The name is one hover away, which is the
+                // trade an icon always asks for - worth it here because these
+                // are the same seven every time, in the same order, and you
+                // learn them once.
+                Row {
+                  id: linkRow
+                  anchors.right: clockCol.left
+                  anchors.rightMargin: Style.space(12)
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(2)
+
+                  Repeater {
+                    model: Model.linkRows(root.airportData)
+                    delegate: Rectangle {
+                      required property var modelData
+                      radius: Style.cornerRadius
+                      implicitWidth: Style.space(24)
+                      implicitHeight: Style.space(22)
+                      color: linkMouse.containsMouse ? Style.hoverFill : "transparent"
+
+                      OpticalGlyph {
+                        anchors.centerIn: parent
+                        text: modelData.icon
+                        fontSize: Style.font.icon
+                        color: linkMouse.containsMouse ? Color.accent : Color.muted
+                      }
+
+                      MouseArea {
+                        id: linkMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.openLink(modelData.url)
+                      }
+
+                      PanelToolTip {
+                        visible: linkMouse.containsMouse
+                        text: modelData.label
+                      }
+                    }
+                  }
                 }
 
                 // What time it is where you are going. Absent entirely when
@@ -1053,6 +1101,10 @@ Item {
                   anchors.verticalCenter: parent.verticalCenter
                   spacing: 0
                   visible: !!Model.localClock(root.localTime, root.clockTick)
+                  // An invisible Column keeps its width, and the icons anchor
+                  // to its left edge - without this a field whose zone is not
+                  // known leaves a clock-shaped hole in the row.
+                  width: visible ? implicitWidth : 0
 
                   Text {
                     anchors.right: parent.right
@@ -1075,6 +1127,7 @@ Item {
               }
 
               Row {
+                id: factsRow
                 width: parent.width
                 spacing: Style.space(8)
 
@@ -1126,33 +1179,6 @@ Item {
                 font.pixelSize: Style.font.bodySmall
               }
 
-              // Where the airport goes when you leave. In the header because
-              // every page has the same answer, and Flow so a narrow panel
-              // wraps them instead of clipping.
-              Flow {
-                visible: !!root.header
-                width: parent.width
-                spacing: Style.space(12)
-
-                Repeater {
-                  model: Model.linkRows(root.airportData)
-                  delegate: Text {
-                    required property var modelData
-                    textFormat: Text.RichText
-                    text: "<a href='" + Model.safeUrl(modelData.url) + "' style='color:"
-                      + Color.accent + ";text-decoration:none'>"
-                      + Model.escapeHtml(modelData.label) + "</a>"
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
-                    onLinkActivated: function (link) { root.openLink(link) }
-                    MouseArea {
-                      anchors.fill: parent
-                      acceptedButtons: Qt.NoButton
-                      cursorShape: Qt.PointingHandCursor
-                    }
-                  }
-                }
-              }
             }
 
             Text {
