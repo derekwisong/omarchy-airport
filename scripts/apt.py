@@ -109,6 +109,11 @@ SUNRISE_URL = "https://api.sunrise-sunset.org/json"
 # NASR subscriptions step 28 days from this verified effective date.
 NASR_ANCHOR = date(2026, 9, 3)
 OSM_TTL_DAYS = 7
+# First look at each Overpass mirror. A busy mirror does not refuse the
+# request, it queues it, and the main instance queues far more often than the
+# community ones - so give every mirror a short look before any of them gets
+# the patient one.
+OVERPASS_FIRST_PASS = 20
 
 FT_PER_NM = 6076.115
 NM_PER_DEG = 60.0
@@ -2296,14 +2301,22 @@ LOUNGE_BRANDS = re.compile(
 
 
 def overpass_query(query, timeout=90):
-    """POST to Overpass, rotating mirrors. 429/504 here means throttled, not broken."""
+    """POST to Overpass, rotating mirrors. 429/504 here means throttled, not broken.
+
+    Two passes with different patience, because the failure that actually hurts
+    is a mirror that accepts the connection and then sits on it. Waiting the
+    full timeout on the first mirror before trying the second cost ATL about a
+    hundred seconds while the other two mirrors were answering the same query
+    in three. The short pass finds a mirror that is awake; the patient pass is
+    for the case where every mirror is genuinely busy rather than stuck.
+    """
     last = None
-    for attempt in range(2):
+    for attempt, patience in enumerate((min(OVERPASS_FIRST_PASS, timeout), timeout)):
         for endpoint in OVERPASS_ENDPOINTS:
             try:
                 data = urllib.parse.urlencode({"data": query}).encode()
                 text = Http.get(
-                    endpoint, data=data, timeout=timeout, retries=1,
+                    endpoint, data=data, timeout=patience, retries=1,
                     headers={"Content-Type": "application/x-www-form-urlencoded"})
                 if not text.lstrip().startswith("{"):
                     raise RuntimeError("non-JSON response from %s" % endpoint)
@@ -2330,7 +2343,10 @@ def q_pois(bbox):
     """Everything interesting inside the aerodrome bounding box."""
     s_, w_, n_, e_ = bbox
     box = f"{s_:.6f},{w_:.6f},{n_:.6f},{e_:.6f}"
-    return f"""[out:json][timeout:120];
+    # 80, not 120: the client gives up at 90, so a server still working at 120
+    # was work nobody could ever collect. ATL, the heaviest field in the
+    # country, answers this in about two seconds.
+    return f"""[out:json][timeout:80];
 (
   nwr{POI_FILTER}({box});
   nwr["shop"]({box});
@@ -3461,8 +3477,14 @@ def cmd_amenities(args):
     pois.sort(key=lambda p: ((p["terminal"] or "~"), p["kind"], p["name"]))
 
     if args.json:
+        # error and stale travel with the payload. Without them an empty list
+        # is ambiguous, and the panel drew a throttled Overpass exactly like a
+        # field nobody has mapped.
         print(json.dumps({"airport": rec, "terminals": data.get("terminals", []),
                           "pois": pois, "warning": warn,
+                          "error": data.get("error"),
+                          "stale": bool(data.get("stale")),
+                          "fetched": data.get("fetched"),
                           "attribution": data.get("attribution")}, indent=2, default=str))
         return
 

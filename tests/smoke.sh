@@ -145,6 +145,14 @@ else
   echo "FAIL traffic phase and clock"; python3 tests/traffic.py; fail=$((fail+1))
 fi
 
+# Overpass mirror rotation, offline. A stuck mirror must not eat the whole
+# budget before the next one is tried.
+if python3 tests/overpass.py >/dev/null 2>&1; then
+  echo "ok   overpass mirror rotation"; pass=$((pass+1))
+else
+  echo "FAIL overpass mirror rotation"; python3 tests/overpass.py; fail=$((fail+1))
+fi
+
 # Live traffic and local time. Which aircraft are up changes by the second, so
 # these assert the plumbing and the honesty rules, never a particular aeroplane.
 check "traffic payload"        '"aircraft"'   $APT traffic KATL --json
@@ -376,6 +384,10 @@ fi
 
 if [[ "${1:-}" == "--with-osm" ]]; then
   check "ATL concourse bucketing" "Concourse" $APT amenities KATL --type lounge
+  # The panel cannot draw "unreachable" differently from "unmapped" unless the
+  # payload says which one it is.
+  check "amenities JSON says if it reached Overpass" '"error"' \
+        $APT amenities KATL --json
   check "AirNav FBO names"        "FlightLevel" $APT fbo KPOU
   check "AirNav fuel prices"      "100LL"       $APT fbo KPOU
 fi

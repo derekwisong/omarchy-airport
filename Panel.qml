@@ -55,6 +55,12 @@ Item {
   property bool fboLoading: false
   property var amenities: null
   property bool amenitiesLoading: false
+  // Seconds spent on the current Overpass fetch. The mirrors are volunteer
+  // infrastructure and a busy one queues rather than refuses, so this wait is
+  // measured in tens of seconds often enough that a static line of grey text
+  // reads as a hang.
+  property int amenitiesWaited: 0
+  onAmenitiesLoadingChanged: root.amenitiesWaited = 0
   property var traffic: null
   property bool trafficLoading: false
   // Table or scope, and how far out. One range for both views, so switching
@@ -364,6 +370,15 @@ Item {
     }
   }
 
+  // A throttled mirror is a transient condition, so the answer to it is one
+  // more try rather than a reload of the whole airport.
+  function retryAmenities() {
+    if (root.amenitiesLoading) return
+    root.amenities = null
+    root.amenitiesIdent = ""
+    ensureGroundData()
+  }
+
   function stepTrafficRange(delta) {
     var ranges = root.trafficRanges
     var at = ranges.indexOf(root.trafficRange)
@@ -626,6 +641,14 @@ Item {
     onTriggered: root.showBusy = root.loadingIdent !== "" || root.liveLoading
   }
 
+  Timer {
+    id: amenitiesClock
+    interval: 1000
+    repeat: true
+    running: root.amenitiesLoading
+    onTriggered: root.amenitiesWaited += 1
+  }
+
   onLoadingIdentChanged: {
     if (loadingIdent === "") {
       busyDelay.stop()
@@ -854,6 +877,12 @@ Item {
                            && (event.key === Qt.Key_BracketLeft
                                || event.key === Qt.Key_BracketRight)) {
                   root.stepTrafficRange(event.key === Qt.Key_BracketRight ? 1 : -1)
+                  event.accepted = true
+                  // Overpass fails transiently often enough to deserve a key.
+                  // Ctrl, because a bare letter belongs to the search field.
+                } else if (root.tab === root.tabAmenities && event.key === Qt.Key_R
+                           && (event.modifiers & Qt.ControlModifier)) {
+                  root.retryAmenities()
                   event.accepted = true
                 } else if (event.key === Qt.Key_Delete
                            && (event.modifiers & Qt.ShiftModifier)) {
@@ -2132,24 +2161,90 @@ Item {
                   width: parent.width
                   spacing: Style.space(4)
 
-                  Text {
+                  // A wait long enough to be mistaken for a hang needs to show
+                  // that it is still alive and to say what it is waiting on.
+                  // Same moving rule as the header, so the panel has one idea
+                  // of what "working" looks like.
+                  Column {
                     visible: root.amenitiesLoading
-                    text: "reading OpenStreetMap… (first look can take a minute)"
-                    color: Color.muted
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
+                    width: parent.width
+                    spacing: Style.space(2)
+
+                    Text {
+                      width: parent.width
+                      wrapMode: Text.WordWrap
+                      text: root.amenitiesWaited < 12
+                            ? "reading OpenStreetMap…"
+                            : (root.amenitiesWaited < 45
+                               ? "reading OpenStreetMap… (" + root.amenitiesWaited + "s)"
+                               : "still waiting on OpenStreetMap (" + root.amenitiesWaited
+                                 + "s) — the public mirrors queue when they are busy")
+                      color: Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    Rectangle {
+                      width: parent.width
+                      height: 1
+                      color: Color.menu.border
+
+                      Rectangle {
+                        height: 1
+                        width: parent.width * 0.35
+                        color: Color.accent
+                        opacity: 0.9
+                        SequentialAnimation on x {
+                          running: root.amenitiesLoading
+                          loops: Animation.Infinite
+                          NumberAnimation { from: 0; to: parent.width * 0.65; duration: 700
+                                            easing.type: Easing.InOutQuad }
+                          NumberAnimation { from: parent.width * 0.65; to: 0; duration: 700
+                                            easing.type: Easing.InOutQuad }
+                        }
+                      }
+                    }
                   }
-                  Text {
+
+                  Column {
                     visible: !root.amenitiesLoading && !!root.amenities
                       && (!root.amenities.pois || root.amenities.pois.length === 0)
                     width: parent.width
-                    wrapMode: Text.WordWrap
-                    // "Unknown", not "none": OpenStreetMap simply may not
-                    // cover this field, which is not the same as an empty one.
-                    text: "Unknown"
-                    color: Color.muted
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
+                    spacing: Style.space(2)
+
+                    Text {
+                      width: parent.width
+                      wrapMode: Text.WordWrap
+                      // An unreachable Overpass is not an unmapped airport, and
+                      // drawing them the same way told the ATL user their field
+                      // had no food on it. "Unknown", not "none", still holds
+                      // for the genuinely unmapped case: OpenStreetMap may
+                      // simply not cover this field, which is not the same as
+                      // an empty one.
+                      text: root.amenities && root.amenities.error
+                            ? "OpenStreetMap could not be reached. Its public mirrors are "
+                              + "volunteer-run and throttle when busy."
+                            : "Unknown"
+                      color: Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    Text {
+                      visible: !!root.amenities && !!root.amenities.error
+                      text: "Try again"
+                      color: Color.accent
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                      font.underline: retryHover.containsMouse
+                      MouseArea {
+                        id: retryHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.retryAmenities()
+                      }
+                    }
                   }
 
                   // Flow, not Row: ATL has eight concourses plus the domestic
@@ -2312,7 +2407,11 @@ Item {
                     width: body.width
                     wrapMode: Text.WordWrap
                     textFormat: Text.PlainText
-                    text: "Amenities © OpenStreetMap contributors (ODbL). Hours go stale — "
+                    // Say when the list is the cache rather than a live read,
+                    // so a stale hour is not mistaken for a checked one.
+                    text: (root.amenities && root.amenities.stale
+                           ? "Overpass was unreachable; showing the last cached read. " : "")
+                      + "Amenities © OpenStreetMap contributors (ODbL). Hours go stale — "
                       + "confirm before relying on them."
                     color: Color.muted
                     font.family: Style.font.family
@@ -2968,6 +3067,8 @@ Item {
               + (root.searching ? "" : "Shift+Del forget · ")
               + (root.tab === root.tabAmenities
                  && Model.terminalChips(root.amenities).length ? "Tab concourse · " : "")
+              + (root.tab === root.tabAmenities && !!root.amenities
+                 && !!root.amenities.error ? "Ctrl+R retry · " : "")
               + "PgUp/PgDn or Ctrl+↑↓ scroll · Esc close   —   not for navigation"
           color: Color.muted
           font.family: Style.font.family
