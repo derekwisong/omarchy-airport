@@ -40,13 +40,14 @@ rm -rf ~/.cache/airport-info ~/.local/share/airport-info ~/.local/state/airport-
 
 ## The panel
 
-Left rail is recents, pinned first. The header — identifier, name, location, conditions and
-the links out — stays put on every page.
+Left rail is recents, pinned first. The header — identifier, name, location, local time,
+conditions and the links out — stays put on every page.
 
 | Page | What's there |
 |---|---|
 | **Summary** | Runway, tower and hours, airspace, fuel, attended hours, landing fee, a forecast band, and Advisories — FAA delay programs and flight restrictions within 50 nm |
 | **Weather** | Category, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, a forecast timeline, raw METAR and TAF |
+| **Traffic** | What ADS-B hears nearby right now — arriving, departing, on the ground, passing over — with type, altitude, speed and distance |
 | **Amenities** | Food, shops and lounges by concourse, filterable, each linking to Google Maps |
 | **Runways** | Which runway the wind favours, then every runway per end: lengths, surface, lighting, alignment, ILS, VGSI, displaced thresholds, LDA, obstructions, pattern altitude |
 | **Procedures** | Approaches by runway, SIDs, STARs, ODPs, minimums, hot spots |
@@ -98,6 +99,7 @@ python3 $apt info KPOU              python3 $apt outlook KORD
 python3 $apt runways KPOU --svg     python3 $apt status DCA
 python3 $apt procedures KATL        python3 $apt wx KPOU
 python3 $apt amenities ATL          python3 $apt fbo KPOU
+python3 $apt traffic KATL           python3 $apt traffic KPOU --radius 40
 python3 $apt nearby KPOU --radius 50 --fuel
 python3 $apt tfr KEWR --radius 50
 python3 $apt notes ATL add "Sky Club F is the good one"
@@ -119,6 +121,18 @@ Notes are markdown in `~/.local/share/airport-info/notes/<IDENT>.md`. Recents li
 - **A ground stop is not a closed airport.** It holds flights bound for the field, at the field
   they are leaving from, usually only those filed out of a few named centres. The line says
   which centres and says the runways are open, because the label alone read as a closure.
+- **Traffic is what was heard, not what is flying.** ADS-B comes from volunteer
+  receivers: an aircraft without ADS-B out, or below the horizon of every nearby receiver,
+  is simply absent. Coverage is excellent over cities and thin over small fields, so the
+  count always says *seen*, and an empty list never means an empty sky.
+- **Arriving and departing are read off the data, not filed.** ADS-B carries no origin or
+  destination, so "arriving" means low and descending near this field. A jet passing over
+  at 24,000 ft on its way down to somewhere else is listed as passing over.
+- **The local clock is not from the FAA.** No FAA product publishes a timezone in
+  structured form — not the eight NASR airport files, not the Chart Supplement index.
+  So the zone is looked up once per airport from a third party and cached; the offset is
+  then recomputed locally, so it stays right when the clocks change. An airport whose zone
+  could not be established shows no time rather than a guessed one.
 - **Outside FAA coverage it says so** rather than reporting no tower or no fuel.
 - **Delays are what the FAA reports**, not a prediction. A forecast is a forecast.
 
@@ -141,7 +155,7 @@ omarchy restart shell      # required to pick up QML changes
 remove it and `omarchy plugin add .` instead.
 
 ```bash
-./tests/smoke.sh              # 104 checks, network required
+./tests/smoke.sh              # 110 checks, network required
 ./tests/smoke.sh --with-osm   # adds Overpass and AirNav
 omarchy plugin validate .
 ```
@@ -168,6 +182,8 @@ All public and unauthenticated. No account, no API key.
 | [FAA TFR](https://tfr.faa.gov/) | Active restrictions, with per-NOTAM geometry for distance | Public domain |
 | [OurAirports](https://ourairports.com/) | Worldwide airports and runways, IATA codes, search ranking | Public domain |
 | [OpenStreetMap](https://www.openstreetmap.org/) via [Overpass](https://overpass-api.de/) | Terminal food, shops, lounges and their concourses | © OpenStreetMap contributors, **ODbL** |
+| [adsb.lol](https://adsb.lol/) | Live ADS-B traffic near an airport | © adsb.lol contributors, **ODbL** |
+| [timeapi.io](https://timeapi.io/) | The IANA timezone for an airport, fetched once and cached | Free public API |
 | [AirNav](https://www.airnav.com/) | FBO names and fuel prices | © AirNav, LLC — one airport on demand, cached 24h |
 | [sunrise-sunset.org](https://sunrise-sunset.org/) | Civil twilight, sunrise, sunset | Free public API |
 

@@ -20,6 +20,26 @@
 
 ### Added
 
+- **A Traffic page.** What ADS-B hears within 25 nm right now, grouped into
+  arriving, departing, on the ground and passing over, with type, altitude,
+  speed and distance. It refreshes itself while its tab is open and stops the
+  moment it is not. From [adsb.lol](https://adsb.lol/), which is volunteer
+  receivers pooling what they hear — so every line says *seen*, and an empty
+  list says the receivers are quiet rather than that the sky is. Arriving and
+  departing are read off altitude and vertical rate, because ADS-B carries no
+  origin or destination, and the page says so.
+- **Local time in the header.** The first thing anyone asks about an airport
+  they are flying to, and nothing in the panel could answer it. No FAA product
+  publishes a timezone in structured form — not any of the eight NASR airport
+  files, not the Chart Supplement index, and the Chart Supplement PDF prints it
+  with subset fonts that contain no extractable text. So the IANA zone is
+  looked up once per airport and kept; only the name is stored, and the offset
+  is recomputed from the system tzdata on every read, so a cached airport still
+  reads correctly the morning the clocks go back. Nearest-city guessing was
+  tried and rejected — it put Pensacola in Eastern and Portland in Mountain,
+  and a wrong hour is worse than no hour, so a failed lookup shows nothing.
+- `amenities --open-now` uses the real zone when it is known, instead of the
+  longitude-derived offset that ignored DST and every timezone boundary.
 - **Delays and TFRs are one `ADVISORIES` section**, because a ground stop, a
   NOTAM and a TFR are the same question to whoever is reading.
 - **A field inside a TFR is reported as inside it.** A TFR is one or more

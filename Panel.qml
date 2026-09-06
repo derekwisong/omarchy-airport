@@ -38,6 +38,7 @@ Item {
   // the next airport's page.
   property string fboIdent: ""
   property string amenitiesIdent: ""
+  property string trafficIdent: ""
   // The local record renders on its own; conditions and TFRs arrive after.
   property bool liveLoading: false
   onLiveLoadingChanged: {
@@ -53,6 +54,8 @@ Item {
   property bool fboLoading: false
   property var amenities: null
   property bool amenitiesLoading: false
+  property var traffic: null
+  property bool trafficLoading: false
 
   // Cache state. The engine keeps one 28-day FAA cycle in SQLite; the first
   // run has to fetch it, and every 28 days it has to fetch it again. Rather
@@ -292,12 +295,16 @@ Item {
     root.requestedIdent = ident
     root.fbo = null
     root.amenities = null
+    root.traffic = null
     if (fboProcess.running) fboProcess.running = false
     if (amenitiesProcess.running) amenitiesProcess.running = false
+    if (trafficProcess.running) trafficProcess.running = false
     root.fboLoading = false
     root.amenitiesLoading = false
+    root.trafficLoading = false
     root.fboIdent = ""
     root.amenitiesIdent = ""
+    root.trafficIdent = ""
     root.amenityFilter = ""
     root.amenityTerminal = ""
     if (panelProcess.running) panelProcess.running = false
@@ -325,6 +332,7 @@ Item {
         loadLive(parsed.header.ident)
         if (root.tab === root.tabAmenities || root.tab === root.tabGround)
           ensureGroundData()
+        if (root.tab === root.tabTraffic) ensureTraffic(false)
       }
     } catch (e) {
       // leave the previous airport on screen rather than blanking the panel
@@ -347,6 +355,17 @@ Item {
                                   root.currentIdent, "--json"]
       amenitiesProcess.running = true
     }
+  }
+
+  function ensureTraffic(force) {
+    if (!root.currentIdent) return
+    if (root.trafficLoading) return
+    if (!force && root.traffic && root.trafficIdent === root.currentIdent) return
+    root.trafficLoading = true
+    root.trafficIdent = root.currentIdent
+    trafficProcess.command = ["python3", root.engine, "traffic",
+                              root.currentIdent, "--json"]
+    trafficProcess.running = true
   }
 
   function moveSelection(delta) {
@@ -549,7 +568,20 @@ Item {
   }
 
   onQueryChanged: searchDebounce.restart()
-  onTabChanged: if (tab === tabAmenities || tab === tabGround) ensureGroundData()
+  onTabChanged: {
+    if (tab === tabAmenities || tab === tabGround) ensureGroundData()
+    if (tab === tabTraffic) ensureTraffic(false)
+  }
+
+  // Traffic goes stale in seconds, so it refreshes itself while its tab is
+  // the one on screen and stops the moment it is not. The engine holds a 15
+  // second cache, so this cannot outrun the source however long it is open.
+  Timer {
+    interval: 20000
+    repeat: true
+    running: root.opened && root.tab === root.tabTraffic && !!root.currentIdent
+    onTriggered: root.ensureTraffic(true)
+  }
 
   Timer { id: searchDebounce; interval: 180; onTriggered: root.runSearch() }
   // Only reason this exists: Date.now() is not a property, so a binding that
@@ -558,7 +590,7 @@ Item {
   Timer {
     interval: 60000
     repeat: true
-    running: root.opened && !!root.outlook
+    running: root.opened && (!!root.outlook || !!root.localTime)
     onTriggered: root.clockTick++
   }
 
@@ -583,10 +615,12 @@ Item {
     }
   }
 
-  readonly property var tabNames: ["Summary", "Weather", "Amenities", "Runways",
-                                   "Procedures", "Frequencies", "Services", "Notes"]
-  readonly property int tabAmenities: 2
-  readonly property int tabGround: 6
+  readonly property var tabNames: ["Summary", "Weather", "Traffic", "Amenities",
+                                   "Runways", "Procedures", "Frequencies",
+                                   "Services", "Notes"]
+  readonly property int tabTraffic: 2
+  readonly property int tabAmenities: 3
+  readonly property int tabGround: 7
   readonly property var weather: airportData ? airportData.weather : null
   readonly property var summary: airportData ? airportData.summary : null
   readonly property var runwayData: airportData ? airportData.runways : null
@@ -594,6 +628,7 @@ Item {
   readonly property var frequencies: airportData ? airportData.frequencies : null
   readonly property var tfr: airportData ? airportData.tfr : null
   readonly property var status: airportData ? airportData.status : null
+  readonly property var localTime: airportData ? airportData.local : null
   readonly property var outlook: (airportData && airportData.weather)
     ? (airportData.weather.outlook || null) : null
 
@@ -651,6 +686,17 @@ Item {
       }
     }
     onExited: root.amenitiesLoading = false
+  }
+  Process {
+    id: trafficProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (root.trafficIdent !== root.currentIdent) return
+        try { root.traffic = JSON.parse(String(text || "{}")) } catch (e) { root.traffic = null }
+      }
+    }
+    onExited: root.trafficLoading = false
   }
   Process { id: pinProcess }
   Process {
@@ -1004,6 +1050,18 @@ Item {
                 font.pixelSize: Style.font.bodySmall
               }
 
+              // What time it is where you are going. In the header because it
+              // is true on every page, and absent entirely when the zone was
+              // never established - a wrong hour is worse than no hour.
+              Text {
+                visible: !!Model.localClock(root.localTime, root.clockTick)
+                textFormat: Text.PlainText
+                text: Model.localClock(root.localTime, root.clockTick)
+                color: Color.menu.text
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+              }
+
               Text {
                 width: parent.width
                 wrapMode: Text.WordWrap
@@ -1329,7 +1387,7 @@ Item {
                   // question to whoever is reading: is anything in my way?
                   PanelSectionHeader {
                     visible: !!(root.status && root.status.available)
-                      || Model.tfrLines(root.tfr, root.header ? root.header.us : true).length > 0
+                      || !!Model.tfrNote(root.tfr, root.header ? root.header.us : true)
                       || !!(root.weather && root.weather.pending)
                     text: "ADVISORIES"
                     foreground: Color.menu.text
@@ -1379,25 +1437,80 @@ Item {
                     visible: Model.statusLines(root.status).length > 0
                   }
 
-                  // Nearest first, each linked to the FAA page for it, with
-                  // a muted tail for what these rows leave out.
+                  // Its own heading under the one above: a delay program and
+                  // a flight restriction are both advisories, but they are not
+                  // the same kind of thing and the list below needs saying
+                  // what it is. Muted, so it reads as a part of ADVISORIES
+                  // rather than a section beside it.
+                  PanelSectionHeader {
+                    visible: !!Model.tfrNote(root.tfr, root.header ? root.header.us : true)
+                    text: "TEMPORARY FLIGHT RESTRICTIONS"
+                    foreground: Color.muted
+                  }
+
+                  // Nearest first, in columns. Only the distance is emphasised
+                  // - it is the column anyone actually scans - and everything
+                  // else sits back, so nine restrictions at once read as a
+                  // list rather than a wall.
                   Repeater {
-                    model: Model.tfrLines(root.tfr, root.header ? root.header.us : true)
-                    delegate: Text {
+                    model: Model.tfrRows(root.tfr, root.header ? root.header.us : true)
+                    delegate: Row {
                       required property var modelData
                       width: parent.width
-                      wrapMode: Text.WordWrap
-                      // Escaped in Model.tfrLines; rich text is for the link.
-                      textFormat: Text.RichText
-                      text: modelData.html
-                      color: modelData.alert ? Color.menu.text : Color.muted
-                      linkColor: Color.accent
-                      font.family: Style.font.family
-                      font.pixelSize: modelData.alert ? Style.font.body
-                                                      : Style.font.caption
-                      font.bold: modelData.alert === true
-                      onLinkActivated: function (link) { root.openLink(link) }
+                      spacing: Style.space(8)
+
+                      Text {
+                        width: Style.space(54)
+                        horizontalAlignment: Text.AlignRight
+                        textFormat: Text.PlainText
+                        text: modelData.near
+                        // Inside a presidential restriction is the one thing
+                        // on this page worth a colour of its own.
+                        color: modelData.inside ? Color.urgent : Color.menu.text
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                        font.bold: true
+                      }
+
+                      Text {
+                        width: Style.space(66)
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
+                        text: modelData.kind
+                        color: Color.muted
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                      }
+
+                      Text {
+                        width: parent.width - Style.space(54 + 66 + 16)
+                        wrapMode: Text.WordWrap
+                        // Escaped in Model.tfrRows; rich text is for the link
+                        // and the italic date.
+                        textFormat: Text.RichText
+                        text: modelData.html
+                        color: Color.menu.text
+                        linkColor: Color.accent
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                        onLinkActivated: function (link) { root.openLink(link) }
+                      }
                     }
+                  }
+
+                  // Always shown, including when there is nothing near, since
+                  // "none within 50 nm" is the answer the heading just asked for.
+                  Text {
+                    visible: !!Model.tfrNote(root.tfr, root.header ? root.header.us : true)
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.RichText
+                    text: Model.tfrNote(root.tfr, root.header ? root.header.us : true)
+                    color: Color.muted
+                    linkColor: Color.accent
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    onLinkActivated: function (link) { root.openLink(link) }
                   }
 
                   Item { width: 1; height: Style.space(4) }
@@ -1676,9 +1789,92 @@ Item {
                   Item { width: 1; height: Style.space(10) }
                 }
 
-                // ============ 2 AMENITIES ============
+                // ============ 2 TRAFFIC ============
                 Column {
                   visible: root.tab === 2
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  Text {
+                    visible: root.trafficLoading && !root.traffic
+                    text: "Listening…"
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.italic: true
+                  }
+
+                  Repeater {
+                    model: Model.trafficGroups(root.traffic)
+                    delegate: Column {
+                      required property var modelData
+                      width: parent.width
+                      spacing: Style.space(2)
+
+                      PanelSectionHeader {
+                        text: modelData.title.toUpperCase() + "  ("
+                          + modelData.count + ")"
+                        foreground: Color.menu.text
+                      }
+
+                      Repeater {
+                        model: modelData.rows
+                        delegate: Row {
+                          required property var modelData
+                          width: parent.width
+                          spacing: Style.space(8)
+
+                          Text {
+                            width: Style.space(80)
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                            text: modelData.call
+                            color: modelData.emergency ? Color.urgent : Color.menu.text
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.body
+                            font.bold: true
+                          }
+                          Text {
+                            width: Style.space(40)
+                            textFormat: Text.PlainText
+                            text: modelData.type
+                            color: Color.muted
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.body
+                          }
+                          Text {
+                            textFormat: Text.PlainText
+                            text: modelData.detail
+                            color: Color.muted
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.body
+                          }
+                        }
+                      }
+
+                      Item { width: 1; height: Style.space(6) }
+                    }
+                  }
+
+                  // Always shown, including when the list is empty, because
+                  // "nothing was heard" is the part that needs explaining.
+                  Text {
+                    visible: !!Model.trafficNote(root.traffic)
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.PlainText
+                    text: Model.trafficNote(root.traffic)
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Item { width: 1; height: Style.space(10) }
+                }
+
+                // ============ 3 AMENITIES ============
+                Column {
+                  visible: root.tab === 3
                   width: parent.width
                   spacing: Style.space(4)
 
@@ -1872,7 +2068,7 @@ Item {
 
                 // ============ 3 RUNWAYS ============
                 Column {
-                  visible: root.tab === 3
+                  visible: root.tab === 4
                   width: parent.width
                   spacing: Style.space(1)
 
@@ -2033,7 +2229,7 @@ Item {
 
                 // ============ 4 PROCEDURES ============
                 Column {
-                  visible: root.tab === 4
+                  visible: root.tab === 5
                   width: parent.width
                   spacing: Style.space(2)
 
@@ -2071,7 +2267,7 @@ Item {
 
                 // ============ 5 FREQUENCIES ============
                 Column {
-                  visible: root.tab === 5
+                  visible: root.tab === 6
                   width: parent.width
                   spacing: Style.space(1)
 
@@ -2148,7 +2344,7 @@ Item {
 
                 // ============ 6 GROUND SERVICES ============
                 Column {
-                  visible: root.tab === 6
+                  visible: root.tab === 7
                   width: parent.width
                   spacing: Style.space(4)
 
@@ -2242,7 +2438,7 @@ Item {
 
                 // ============ 7 NOTES ============
                 Column {
-                  visible: root.tab === 7
+                  visible: root.tab === 8
                   width: parent.width
                   spacing: Style.space(6)
 

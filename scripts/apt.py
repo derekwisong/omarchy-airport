@@ -1723,6 +1723,64 @@ def _tfr_locate(notam_ids, cache):
     return True
 
 
+# The FAA writes a TFR's description as one run-on string: the place, then the
+# days spelled out in full, then whether they are local or UTC. Rendered whole
+# it is a paragraph per restriction, and an airport under a presidential visit
+# has nine of them. Split so the panel can put the place and the dates in their
+# own columns and stop shouting.
+TFR_WEEKDAY = re.compile(
+    r",\s*(?=(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\b)", re.I)
+TFR_DATE = re.compile(r"\w+day,\s*(\w+)\s+(\d{1,2}),\s*(\d{4})")
+
+
+def _tfr_place(desc):
+    """Everything before the dates start."""
+    text = (desc or "").strip().rstrip(".")
+    parts = TFR_WEEKDAY.split(text, 1)
+    place = parts[0].strip().strip(",").strip()
+    # "DISNEYLAND THEME PARK, ANAHEIM,, CA" - the FAA's own double comma.
+    return re.sub(r",\s*,", ",", place)
+
+
+def _tfr_when(desc, today=None):
+    """'Friday, September 4, 2026 through Monday, September 7, 2026 Local'
+    becomes 'Fri 4 - Mon 7 Sep'. Years appear only when they are not this one,
+    because a TFR running into next October should say so."""
+    text = (desc or "").strip()
+    parts = TFR_WEEKDAY.split(text, 1)
+    if len(parts) < 2:
+        return ""
+    found = []
+    for month, day, year in TFR_DATE.findall(parts[1]):
+        try:
+            found.append(datetime.strptime("%s %s %s" % (month, day, year), "%B %d %Y"))
+        except ValueError:
+            continue
+    if not found:
+        return re.sub(r"\s+(Local|UTC)$", "", parts[1]).strip()
+    this_year = (today or date.today()).year
+
+    start, end = found[0], found[-1]
+    # Years are noise in the common case and essential in the rare one, so they
+    # appear when a date is not in this year, and on both ends of a span that
+    # crosses a new year - "Mon 20 Oct 2025 - Tue 20 Oct" reads as a typo.
+    spans_years = start.year != end.year
+
+    def one(when, month=True):
+        out = "%s %d" % (when.strftime("%a"), when.day)
+        if month:
+            out += " %s" % when.strftime("%b")
+        if when.year != this_year or spans_years:
+            out += " %d" % when.year
+        return out
+
+    if len(found) < 2 or end == start:
+        return one(start)
+    # Drop the repeated month when both ends share it and the year.
+    same = start.month == end.month and not spans_years
+    return "%s - %s" % (one(start, month=not same), one(end))
+
+
 def tfrs_near(rec, radius_nm=TFR_RADIUS_NM):
     """Active TFRs within radius_nm of one airport.
 
@@ -1760,8 +1818,10 @@ def tfrs_near(rec, radius_nm=TFR_RADIUS_NM):
         dist = tfr_distance_nm(rec["lat"], rec["lon"], rings)
         if dist is None or dist > radius_nm:
             continue
+        desc = tfr.get("description", "")
         hits.append({"id": nid, "type": tfr.get("type", ""),
-                     "description": tfr.get("description", ""),
+                     "description": desc,
+                     "place": _tfr_place(desc), "when": _tfr_when(desc),
                      "state": tfr.get("state", ""),
                      "distance_nm": round(dist, 1),
                      "url": tfr_page_url(nid)})
@@ -2649,6 +2709,115 @@ def approx_local_time(lon):
     return datetime.now(timezone.utc) + timedelta(hours=offset), offset
 
 
+# --------------------------------------------------------------------------
+# Local time at the airport
+#
+# "What time is it there" is the first thing anyone asks about an airport they
+# are flying to, and no FAA product answers it. The Chart Supplement prints
+# UTC-5(-4DT) on the page, but none of the eight NASR APT files carries a
+# timezone column, the Chart Supplement index is a list of PDF names, and the
+# PDF itself is drawn with subset fonts - the airport's own name does not
+# appear in it as text. So the zone comes from outside the FAA.
+#
+# Only the IANA name is fetched and stored, once per airport, because a zone
+# name is effectively permanent while the offset it implies is not. The offset
+# is recomputed from the system tzdata on every read, so a cached airport still
+# reads correctly the morning the clocks go back.
+#
+# Nearest-zone guessing was tried and rejected: matching an airport to the
+# closest representative point in zone1970.tab put Pensacola in Eastern,
+# Portland in Mountain and El Paso in Arizona. A wrong hour is worse than no
+# hour, so a lookup that fails shows nothing at all.
+# --------------------------------------------------------------------------
+
+TZ_SOURCES = (
+    ("timeapi.io", "https://timeapi.io/api/timezone/coordinate?latitude=%.4f&longitude=%.4f",
+     ("timeZone",)),
+    ("wheretheiss.at", "https://api.wheretheiss.at/v1/coordinates/%.4f,%.4f",
+     ("timezone_id",)),
+)
+TZ_CACHE = CACHE_DIR / "timezones.json"
+
+
+def _tz_cache():
+    try:
+        data = json.loads(TZ_CACHE.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _tz_remember(key, zone):
+    cache = _tz_cache()
+    cache[key] = zone
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = TZ_CACHE.with_suffix(".part")
+        tmp.write_text(json.dumps(cache))
+        os.replace(tmp, TZ_CACHE)
+    except OSError:
+        pass
+
+
+def airport_timezone(rec, offline=False):
+    """The IANA zone for one airport, looked up once and then kept.
+
+    Two sources because one small free service should not be the reason a
+    panel stops showing the time. Returns "" when it cannot be established."""
+    if rec is None or rec["lat"] is None or rec["lon"] is None:
+        return ""
+    key = (rec["id"] or rec["icao"] or "").upper()
+    if not key:
+        return ""
+    cache = _tz_cache()
+    if key in cache:
+        return cache[key] or ""
+    if offline:
+        return ""
+    for _, url, path in TZ_SOURCES:
+        try:
+            got = Http.json(url % (rec["lat"], rec["lon"]), timeout=20, retries=1)
+        except Exception:
+            continue
+        zone = ""
+        for field in path:
+            zone = str((got or {}).get(field) or "").strip()
+            if zone:
+                break
+        # Only a zone this machine's tzdata knows is worth storing; anything
+        # else would be a name that renders as nothing later on.
+        if zone and _zone_info(zone) is not None:
+            _tz_remember(key, zone)
+            return zone
+    return ""
+
+
+def _zone_info(name):
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:
+        return None
+
+
+def local_time(rec, offline=False, now=None):
+    """Wall-clock time at the airport, or {} when the zone is not known."""
+    zone = airport_timezone(rec, offline=offline)
+    info = _zone_info(zone) if zone else None
+    if info is None:
+        return {}
+    when = (now or datetime.now(timezone.utc)).astimezone(info)
+    offset = when.utcoffset() or timedelta(0)
+    minutes = int(offset.total_seconds() // 60)
+    return {"zone": zone,
+            "abbrev": when.tzname() or "",
+            "time": when.strftime("%H:%M"),
+            "date": when.strftime("%a %d %b"),
+            "offset_minutes": minutes,
+            "utc_offset": "UTC%+03d:%02d" % (int(minutes / 60), abs(minutes) % 60),
+            "iso": when.isoformat(timespec="minutes")}
+
+
 DAY_INDEX = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
 
 
@@ -3278,9 +3447,15 @@ def cmd_amenities(args):
 
     warn = None
     if args.open_now:
-        when, offset = approx_local_time(rec["lon"])
-        warn = ("open-now uses UTC%+d derived from longitude; it ignores DST and "
-                "timezone boundaries" % offset)
+        local = local_time(rec)
+        if local:
+            when = datetime.fromisoformat(local["iso"])
+        else:
+            # Only when the zone could not be established. Longitude ignores
+            # DST and every timezone boundary, so it says so.
+            when, offset = approx_local_time(rec["lon"])
+            warn = ("open-now uses UTC%+d derived from longitude; it ignores DST "
+                    "and timezone boundaries" % offset)
         pois = [p for p in pois if open_at(p["hours"], when)]
 
     pois.sort(key=lambda p: ((p["terminal"] or "~"), p["kind"], p["name"]))
@@ -3853,6 +4028,132 @@ def taf_group_summary(group):
 
 
 # --------------------------------------------------------------------------
+# Live traffic
+#
+# ADS-B from adsb.lol, which is volunteer receivers pooling what they hear.
+# That shapes every claim this makes: it is what was *seen*, never what is
+# flying. An aircraft with no ADS-B out, or below the horizon of every nearby
+# receiver, is simply absent - and coverage is excellent over cities and thin
+# over the small fields where a lot of this plugin's users fly. So the count is
+# always phrased as seen, and an empty result never says the sky is empty.
+#
+# Phase is inferred from altitude and vertical rate rather than asserted: ADS-B
+# carries no origin or destination, so "arriving" here means low and coming
+# down near this field, which is a reading of the data and is labelled as one.
+# --------------------------------------------------------------------------
+
+ADSB_URL = "https://api.adsb.lol/v2/point/%.5f/%.5f/%d"
+ADSB_ATTRIB = "adsb.lol contributors, ODbL"
+TRAFFIC_CACHE = CACHE_DIR / "traffic.json"
+TRAFFIC_TTL = 15
+TRAFFIC_RADIUS_NM = 25
+TRAFFIC_MAX_RADIUS = 250
+# Above this, an aircraft near the field is passing over it rather than using
+# it. Well clear of a jet's final descent and a light aircraft's whole world.
+TRAFFIC_PATTERN_CEILING = 13000
+# Vertical rate that counts as going somewhere rather than holding a level.
+TRAFFIC_RATE = 250
+
+
+def _traffic_num(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _traffic_phase(ac):
+    """Arriving, departing, on the ground, or passing over."""
+    alt = ac.get("alt_baro")
+    if isinstance(alt, str) and alt.strip().lower() == "ground":
+        return "ground", None
+    alt = _traffic_num(alt)
+    rate = _traffic_num(ac.get("baro_rate"))
+    if rate is None:
+        rate = _traffic_num(ac.get("geom_rate"))
+    if alt is None or alt > TRAFFIC_PATTERN_CEILING:
+        return "over", alt
+    if rate is not None and rate <= -TRAFFIC_RATE:
+        return "arriving", alt
+    if rate is not None and rate >= TRAFFIC_RATE:
+        return "departing", alt
+    return "over", alt
+
+
+TRAFFIC_ORDER = {"arriving": 0, "departing": 1, "ground": 2, "over": 3}
+
+
+def fetch_traffic(rec, radius_nm=TRAFFIC_RADIUS_NM, refresh=False):
+    """What is in the air around one airport right now.
+
+    available=False means nobody answered, which is not the same as nothing
+    flying and must never be drawn as one."""
+    if rec is None or rec["lat"] is None or rec["lon"] is None:
+        return {"available": False, "aircraft": []}
+    radius = max(1, min(int(radius_nm), TRAFFIC_MAX_RADIUS))
+    key = "%s/%d" % ((rec["id"] or rec["icao"] or "?").upper(), radius)
+    # A short cache so walking on and off the tab does not re-ask every time;
+    # anything longer and it stops being live.
+    try:
+        cached = json.loads(TRAFFIC_CACHE.read_text())
+        if (not refresh and cached.get("key") == key
+                and time.time() - cached.get("at", 0) < TRAFFIC_TTL):
+            return cached["result"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        payload = Http.json(ADSB_URL % (rec["lat"], rec["lon"], radius),
+                            timeout=20, retries=1)
+    except Exception as exc:
+        return {"available": False, "aircraft": [], "error": str(exc)}
+
+    out = []
+    for ac in (payload or {}).get("ac", []) or []:
+        if not isinstance(ac, dict):
+            continue
+        phase, alt = _traffic_phase(ac)
+        dist = _traffic_num(ac.get("dst"))
+        if dist is None:
+            dist = haversine_nm(rec["lat"], rec["lon"],
+                                _traffic_num(ac.get("lat")) or 0.0,
+                                _traffic_num(ac.get("lon")) or 0.0)
+        out.append({
+            "flight": str(ac.get("flight") or "").strip(),
+            "reg": str(ac.get("r") or "").strip(),
+            "type": str(ac.get("t") or "").strip(),
+            "phase": phase,
+            "altitude": int(alt) if alt is not None else None,
+            "speed": int(_traffic_num(ac.get("gs")) or 0) or None,
+            "rate": int(_traffic_num(ac.get("baro_rate")) or 0) or None,
+            "distance_nm": round(dist, 1) if dist is not None else None,
+            "squawk": str(ac.get("squawk") or "").strip(),
+            "emergency": str(ac.get("emergency") or "").strip().lower()
+                         not in ("", "none"),
+        })
+    out.sort(key=lambda a: (TRAFFIC_ORDER.get(a["phase"], 9),
+                            a["distance_nm"] if a["distance_nm"] is not None else 1e9))
+    result = {"available": True, "aircraft": out, "seen": len(out),
+              "radius_nm": radius, "attribution": ADSB_ATTRIB,
+              "updated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = TRAFFIC_CACHE.with_suffix(".part")
+        tmp.write_text(json.dumps({"key": key, "at": time.time(), "result": result}))
+        os.replace(tmp, TRAFFIC_CACHE)
+    except OSError:
+        pass
+    return result
+
+
+def traffic_counts(result):
+    counts = {}
+    for ac in (result or {}).get("aircraft", []):
+        counts[ac["phase"]] = counts.get(ac["phase"], 0) + 1
+    return counts
+
+
+
+# --------------------------------------------------------------------------
 # FAA national airspace status
 #
 # One small XML file - under 2 KB - covering every airport the FAA is currently
@@ -4258,6 +4559,45 @@ def cmd_status(args):
                                      (item.get("text") or item["reason"])[:70]))
 
 
+def cmd_traffic(args):
+    """What is flying near an airport, as ADS-B saw it."""
+    conn = db_connect()
+    rec = need_airport(conn, args.airport)
+    result = fetch_traffic(rec, radius_nm=args.radius, refresh=args.refresh)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    if not result["available"]:
+        print("Traffic unavailable: %s" % result.get("error", "no answer"))
+        return
+    print("%s  %s\n" % (display_id(rec), rec["name"]))
+    if not result["aircraft"]:
+        print("Nothing seen within %d nm. Coverage is volunteer receivers, so "
+              "this is not the same as an empty sky." % result["radius_nm"])
+    labels = {"arriving": "ARRIVING", "departing": "DEPARTING",
+              "ground": "ON THE GROUND", "over": "PASSING OVER"}
+    shown = ""
+    for ac in result["aircraft"]:
+        if ac["phase"] != shown:
+            shown = ac["phase"]
+            print("%s%s" % ("" if ac is result["aircraft"][0] else "\n",
+                            labels.get(shown, shown.upper())))
+        alt = "ground" if ac["phase"] == "ground" else (
+            "%s ft" % format(ac["altitude"], ",") if ac["altitude"] is not None else "-")
+        print("  %-9s %-6s %-7s %9s %6s %7s" % (
+            ac["flight"] or ac["reg"] or ac["squawk"] or "?", ac["type"],
+            ac["reg"], alt,
+            "%d kt" % ac["speed"] if ac["speed"] else "",
+            "%.1f nm" % ac["distance_nm"] if ac["distance_nm"] is not None else ""))
+    counts = traffic_counts(result)
+    print("\n%d aircraft seen within %d nm (%s)."
+          % (result["seen"], result["radius_nm"],
+             ", ".join("%d %s" % (n, k) for k, n in sorted(counts.items())) or "none"))
+    print("Traffic data (c) %s. ADS-B is what receivers heard, not everything "
+          "flying: an aircraft without ADS-B out, or below the horizon of every "
+          "nearby receiver, does not appear." % ADSB_ATTRIB)
+
+
 def live_weather(rec, offline=False):
     """The network half of an airport: conditions and sun times."""
     if offline:
@@ -4299,6 +4639,7 @@ def cmd_live(args):
         "weather": live_weather(rec),
         "tfr": tfrs_near(rec),
         "status": airport_status(rec),
+        "local": local_time(rec),
     }, default=str))
 
 
@@ -4369,6 +4710,9 @@ def cmd_panel(args):
         "weather": weather,
         "tfr": (tfrs_near(rec) if not args.no_live
                 else {"available": False, "tfrs": []}),
+        # The zone is cached permanently, so the local-only pass still shows
+        # the time for any airport that has been looked at before.
+        "local": local_time(rec, offline=args.no_live),
         "runways": {
             "runways": runways,
             "pattern_altitude": pattern_altitude(conn, rec),
@@ -4527,6 +4871,14 @@ def main(argv=None):
                     help="nautical miles (default %g)" % TFR_RADIUS_NM)
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_tfr)
+
+    sp = sub.add_parser("traffic", help="live ADS-B traffic near an airport")
+    sp.add_argument("airport")
+    sp.add_argument("--radius", type=int, default=TRAFFIC_RADIUS_NM,
+                    help="nautical miles (default %d)" % TRAFFIC_RADIUS_NM)
+    sp.add_argument("--refresh", action="store_true")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_traffic)
 
     sp = sub.add_parser("amenities", help="food, shops and lounges by terminal/concourse")
     sp.add_argument("airport")

@@ -129,6 +129,21 @@ else
   echo "FAIL TFR distance maths"; python3 tests/geometry.py; fail=$((fail+1))
 fi
 
+# Traffic phase and local time, likewise offline.
+if python3 tests/traffic.py >/dev/null 2>&1; then
+  echo "ok   traffic phase and clock"; pass=$((pass+1))
+else
+  echo "FAIL traffic phase and clock"; python3 tests/traffic.py; fail=$((fail+1))
+fi
+
+# Live traffic and local time. Which aircraft are up changes by the second, so
+# these assert the plumbing and the honesty rules, never a particular aeroplane.
+check "traffic payload"        '"aircraft"'   $APT traffic KATL --json
+check "traffic says seen"      "seen within"  $APT traffic KATL
+check "traffic credits ODbL"   "adsb.lol contributors, ODbL" $APT traffic KATL
+check "local time in payload"  '"zone"'       $APT live KATL
+check "arizona ignores DST"    "MST"          $APT live KPHX
+
 # The favoured-runway sum needs numbers, not the wind sentence, and a pattern
 # altitude has to exist even where the FAA prints none.
 check "numeric wind exposed"  '"wind_dir"'   $APT panel KHPN --no-record

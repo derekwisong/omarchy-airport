@@ -360,6 +360,112 @@ function frequencyRows(f) {
   return rows
 }
 
+// ---- local time -----------------------------------------------------------
+// The clock at the airport, ticked by the panel rather than read out of the
+// payload: the engine's timestamp is minutes old by the time anyone looks. The
+// engine supplies the offset, recomputed from the zone on every build, so this
+// stays right across a daylight-saving change without refetching anything.
+//
+// Empty when the zone was never established. No FAA product publishes one, so
+// it is looked up per airport and cached, and an airport whose lookup has not
+// happened yet shows no time at all rather than a guessed one.
+var CLOCK_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+var CLOCK_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+// The tick argument is unused: it exists so a binding re-evaluates every
+// minute, the same way the forecast band's readouts do.
+function localClock(local, tick) {
+  if (!local || local.offset_minutes === undefined
+      || local.offset_minutes === null) return ""
+  // Shift into the airport's offset, then read the shifted instant as UTC.
+  var d = new Date(Date.now() + local.offset_minutes * 60000)
+  var hh = ("0" + d.getUTCHours()).slice(-2)
+  var mm = ("0" + d.getUTCMinutes()).slice(-2)
+  return hh + ":" + mm + (local.abbrev ? " " + local.abbrev : "")
+    + "  ·  " + CLOCK_DAYS[d.getUTCDay()] + " " + d.getUTCDate()
+    + " " + CLOCK_MONTHS[d.getUTCMonth()]
+}
+
+
+// ---- live traffic ---------------------------------------------------------
+// ADS-B is what volunteer receivers heard, which is not what is flying. Every
+// line here is phrased as seen, the count says so, and an empty list says the
+// receivers are quiet rather than the sky is.
+//
+// Phase is inferred from altitude and vertical rate - ADS-B carries no origin
+// or destination - so these are headed the way the data says, not the way a
+// flight plan says.
+var TRAFFIC_GROUPS = [
+  { key: "arriving",  title: "Arriving" },
+  { key: "departing", title: "Departing" },
+  { key: "ground",    title: "On the ground" },
+  { key: "over",      title: "Passing over" }
+]
+
+function trafficGroups(traffic) {
+  if (!traffic || !traffic.available) return []
+  var list = traffic.aircraft || []
+  var out = []
+  for (var g = 0; g < TRAFFIC_GROUPS.length; g++) {
+    var rows = []
+    for (var i = 0; i < list.length; i++)
+      if (list[i].phase === TRAFFIC_GROUPS[g].key) rows.push(trafficRow(list[i]))
+    if (rows.length)
+      out.push({ title: TRAFFIC_GROUPS[g].title, count: rows.length, rows: rows })
+  }
+  return out
+}
+
+
+function trafficRow(a) {
+  return {
+    call: a.flight || a.reg || (a.squawk ? "squawk " + a.squawk : "unknown"),
+    type: a.type || "",
+    detail: trafficDetail(a),
+    emergency: a.emergency === true
+  }
+}
+
+
+function trafficDetail(a) {
+  var bits = []
+  if (a.phase === "ground") bits.push("on the ground")
+  else if (a.altitude !== null && a.altitude !== undefined)
+    bits.push(commas(a.altitude) + " ft")
+  if (a.speed) bits.push(a.speed + " kt")
+  if (a.distance_nm !== null && a.distance_nm !== undefined)
+    bits.push(a.distance_nm + " nm")
+  return bits.join("  ·  ")
+}
+
+
+function commas(n) {
+  var s = String(Math.round(Number(n) || 0)), out = ""
+  for (var i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 === 0) out += ","
+    out += s[i]
+  }
+  return out
+}
+
+
+// What the list above is and is not, said once under it.
+function trafficNote(traffic) {
+  if (!traffic) return ""
+  if (!traffic.available)
+    return "Could not reach the traffic feed. This says nothing about the sky - "
+      + "only that the report did not arrive."
+  var n = traffic.seen || 0
+  if (!n)
+    return "Nothing seen within " + (traffic.radius_nm || 25) + " nm. Coverage is "
+      + "volunteer receivers, so this is not the same as an empty sky."
+  return n + " aircraft seen within " + (traffic.radius_nm || 25) + " nm. ADS-B is "
+    + "what receivers heard: anything without ADS-B out, or below their horizon, "
+    + "is not here. © " + (traffic.attribution || "adsb.lol contributors, ODbL")
+}
+
+
 // ---- TFRs, by distance ----------------------------------------------------
 
 // The FAA's own list page, for everything the rows below do not carry.
@@ -375,43 +481,52 @@ var TFR_ROWS = 5
 // state line does not stop being in your way because the line is there. The
 // engine locates every active TFR now, so these are the ones near this field.
 //
-// "Flight restriction" rather than "TFR" because the Summary is the page a
-// non-pilot reads; the abbreviation appears once, on the link.
-function tfrLines(t, us) {
+// Three columns rather than a sentence per restriction. An airport under a
+// presidential visit has nine of these at once, and as one bold line each they
+// were a wall of text with the distance - the only part anyone scans for -
+// buried in the middle of it.
+function tfrRows(t, us) {
   if (us === false) return []
   if (!t || !t.available) return []
   var list = t.tfrs || []
-  var radius = t.radius_nm || 50
   var out = []
   for (var i = 0; i < list.length && i < TFR_ROWS; i++) {
     var f = list[i]
-    var bits = []
-    if (f.type) bits.push(f.type)
-    if (f.description) bits.push(f.description)
-    // Zero is not a distance anyone reads as "you are in it".
-    var near = f.distance_nm > 0 ? f.distance_nm + " nm" : "field is inside it"
-    var text = near + " · " + bits.join(" · ")
-    out.push({ label: "Flight restriction", text: text, alert: true,
-               html: escapeHtml("Flight restriction — " + statusTrim(text))
-                 + advisoryLink(f.url, "detail") })
+    var what = f.place || f.description || ""
+    // Only the distance is emphasised, because it is the one column that
+    // decides whether the rest of the row matters to you.
+    out.push({
+      near: f.distance_nm > 0 ? f.distance_nm + " nm" : "inside",
+      inside: !(f.distance_nm > 0),
+      kind: (f.type || "").toLowerCase(),
+      html: escapeHtml(statusTrim(what))
+        + (f.when ? "  <i>" + escapeHtml(f.when) + "</i>" : "")
+        + advisoryLink(f.url, "detail")
+    })
   }
-  // What the rows above leave out, and what could not be placed on a map at
-  // all. A standing national notice is not near this field; it is near every
-  // field, which is a different claim and gets a different line.
+  return out
+}
+
+
+// What the rows leave out, and what could not be placed on a map at all. Shown
+// even when there are no rows, because "none within 50 nm" is the answer to
+// the question the heading just asked.
+function tfrNote(t, us) {
+  if (us === false) return ""
+  if (!t || !t.available) return ""
+  var list = t.tfrs || []
+  var radius = t.radius_nm || 50
   var notes = []
-  if (!list.length)
-    notes.push("No flight restrictions within " + radius + " nm")
+  if (!list.length) notes.push("None within " + radius + " nm")
   else if (list.length > TFR_ROWS)
     notes.push((list.length - TFR_ROWS) + " more within " + radius + " nm")
+  // A standing national notice is not near this field; it is near every field,
+  // which is a different claim and does not belong in the list above.
   if (t.nationwide)
     notes.push(t.nationwide + " standing nationwide notice"
                + (t.nationwide === 1 ? "" : "s"))
-  if (t.unlocated)
-    notes.push(t.unlocated + " could not be located")
-  out.push({ label: "", text: notes.join(" · "), alert: false,
-             html: escapeHtml(notes.join(" · "))
-               + advisoryLink(TFR_LIST_URL, "TFR list") })
-  return out
+  if (t.unlocated) notes.push(t.unlocated + " could not be located")
+  return escapeHtml(notes.join(" · ")) + advisoryLink(TFR_LIST_URL, "TFR list")
 }
 
 
