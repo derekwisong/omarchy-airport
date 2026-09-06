@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- **Traffic was crediting this airport with its neighbours' movements.** Phase
+  was decided by height and vertical rate alone, so every jet climbing out of
+  Teterboro was reported as departing Westchester twenty miles away, and jets
+  parked on Teterboro's ramp were listed as on the ground at Westchester. Three
+  things now have to agree: an aircraft has to be going the right way (a
+  departure from this field climbs away from it, an arrival descends toward
+  it), it has to be inside a cone over the field (on the ground you are on the
+  field; at three miles you are under 3,900 ft; at ten, under 9,500 - with a
+  floor too, because 400 ft at twenty miles is on somebody else's final), and
+  past fifteen miles nothing is claimed at all. Traffic that fails any of those
+  still appears, as passing over, which is all that is actually known.
+- **The `detail` links on flight restrictions can be clicked.** They are handled
+  directly now, and the press is only taken when the pointer is genuinely over
+  a link, so dragging to scroll still works over the rest of the row.
+- **The page tabs fit on one line again.** Nine of them at twenty units of
+  padding each spent a quarter of the bar on empty space; the padding gave way
+  rather than the names, none of which abbreviates without losing something.
+
 - **A ground stop no longer reads as a closed airport.** The line said
   `Ground stop — thunderstorms — until 6:45 pm EDT` and sat next to a row
   labelled `Airport closure`, which is how a program holding ZDC and ZNY
@@ -20,6 +38,18 @@
 
 ### Added
 
+- **A map view of the traffic**, switched with `Tab` or the buttons above it: a
+  plan view centred on the field with range rings, the real runway layout drawn
+  from the coordinates already in the cache, and a chevron per aircraft turned
+  to its own track - filled for arriving, hollow for departing, so the two stay
+  apart on a theme where their colours do not. `[` and `]` step the range
+  through 10, 25, 50 and 100 nm, and the table and the map share it, so
+  switching between them never quietly changes what you are looking at.
+
+  Deliberately not a globe. Twenty-five miles is 0.42 degrees of latitude,
+  which on a globe drawn from any ordinary country outline is a single dot -
+  the radio atlas gets to be a globe because shortwave really is planetary.
+- **Heading in the traffic table**, after the altitude and before the speed.
 - **A Traffic page.** What ADS-B hears within 25 nm right now, grouped into
   arriving, departing, on the ground and passing over, with type, altitude,
   speed and distance. It refreshes itself while its tab is open and stops the
@@ -62,6 +92,13 @@
 
 ### Changed
 
+- **The header is three rows instead of six.** It sits above every page, so
+  every line it takes is a line the page below loses. The name reads across
+  from the identifier, the clock uses the right-hand space that was empty, and
+  the ICAO form, the place and the elevation share one muted line. The flight
+  category was a filled pill, which made the one thing on the page that is only
+  ever a hint shout louder than the airport's own name; it is a small coloured
+  dot now.
 - `apt.py tfr` defaults to a 50 nm radius, sorts by distance and drops
   `--no-geometry`; geometry is the point of it and is now cached.
 

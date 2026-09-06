@@ -4051,8 +4051,28 @@ TRAFFIC_MAX_RADIUS = 250
 # Above this, an aircraft near the field is passing over it rather than using
 # it. Well clear of a jet's final descent and a light aircraft's whole world.
 TRAFFIC_PATTERN_CEILING = 13000
+# Traffic using a runway sits in a cone over it: on the ground you are on the
+# field, at four miles you are low, at twenty you can be in the teens. A flat
+# ceiling let anything low anywhere in the ring count as ours, which around a
+# busy metro is mostly somebody else's circuit. Roughly a 7 degree gradient,
+# which is well outside any real approach or departure profile - the point is
+# to exclude the obviously-not-ours, not to grade anyone's technique.
+TRAFFIC_CONE_FT_PER_NM = 800.0
+TRAFFIC_CONE_BASE_FT = 1500.0
+# The cone has a floor as well as a lid. An aeroplane at 400 feet twenty miles
+# out is not on our final, it is on somebody else's - being far and low is as
+# much a disqualification as being near and high.
+TRAFFIC_CONE_FLOOR_FT_PER_NM = 100.0
+# And past the point where the lid meets the flat ceiling the cone stops
+# telling anything apart, so beyond here nothing is claimed as ours. Traffic
+# still appears; it is reported as passing over, which is all that is known.
+TRAFFIC_LOCAL_NM = 15.0
 # Vertical rate that counts as going somewhere rather than holding a level.
 TRAFFIC_RATE = 250
+# How far from the field an aircraft on the ground can be and still be on this
+# one. Wide enough for the far ramp at Denver, narrow enough that the jets
+# parked at Teterboro stop appearing on Westchester's page.
+TRAFFIC_GROUND_NM = 3.0
 
 
 def _traffic_num(value):
@@ -4062,8 +4082,52 @@ def _traffic_num(value):
         return None
 
 
-def _traffic_phase(ac):
-    """Arriving, departing, on the ground, or passing over."""
+def bearing_deg(lat1, lon1, lat2, lon2):
+    """Initial great-circle bearing from the first point to the second."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dlon = math.radians(lon2 - lon1)
+    y = math.sin(dlon) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dlon)
+    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+
+def _angle_between(a, b):
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+# How far off "straight at the field" a track may be and still count as coming
+# here, and how far off "straight away" to count as leaving. Between the two is
+# traffic crossing the area, which is neither.
+TRAFFIC_TOWARD = 75.0
+TRAFFIC_AWAY = 105.0
+
+
+def _traffic_in_cone(alt_ft, dist_nm):
+    """Is this aircraft where one using this runway would be?"""
+    if alt_ft is None:
+        return False
+    if dist_nm is None:
+        return alt_ft <= TRAFFIC_PATTERN_CEILING
+    if dist_nm > TRAFFIC_LOCAL_NM:
+        return False
+    lid = min(TRAFFIC_PATTERN_CEILING,
+              TRAFFIC_CONE_FT_PER_NM * max(0.0, dist_nm) + TRAFFIC_CONE_BASE_FT)
+    floor = TRAFFIC_CONE_FLOOR_FT_PER_NM * max(0.0, dist_nm)
+    return floor <= alt_ft <= lid
+
+
+def _traffic_phase(ac, to_field=None, dist_nm=None):
+    """Arriving, departing, on the ground, or passing over.
+
+    Height and vertical rate alone are not enough, and getting that wrong is
+    not subtle: HPN has Teterboro 20 nm southwest and three more big fields
+    inside the same ring, so every jet climbing out of one of them was being
+    reported as departing Westchester. A departure from *this* field is
+    climbing and going away from it; an arrival is descending and coming at
+    it. Anything else in the ring is passing through, which is its own row.
+
+    Without a track there is no way to tell, and it is reported as passing
+    over rather than guessed at."""
     alt = ac.get("alt_baro")
     if isinstance(alt, str) and alt.strip().lower() == "ground":
         return "ground", None
@@ -4071,11 +4135,15 @@ def _traffic_phase(ac):
     rate = _traffic_num(ac.get("baro_rate"))
     if rate is None:
         rate = _traffic_num(ac.get("geom_rate"))
-    if alt is None or alt > TRAFFIC_PATTERN_CEILING:
+    if rate is None or not _traffic_in_cone(alt, dist_nm):
         return "over", alt
-    if rate is not None and rate <= -TRAFFIC_RATE:
+    track = _traffic_num(ac.get("track"))
+    if track is None or to_field is None:
+        return "over", alt
+    off = _angle_between(track, to_field)
+    if rate <= -TRAFFIC_RATE and off <= TRAFFIC_TOWARD:
         return "arriving", alt
-    if rate is not None and rate >= TRAFFIC_RATE:
+    if rate >= TRAFFIC_RATE and off >= TRAFFIC_AWAY:
         return "departing", alt
     return "over", alt
 
@@ -4111,12 +4179,18 @@ def fetch_traffic(rec, radius_nm=TRAFFIC_RADIUS_NM, refresh=False):
     for ac in (payload or {}).get("ac", []) or []:
         if not isinstance(ac, dict):
             continue
-        phase, alt = _traffic_phase(ac)
+        aclat, aclon = _traffic_num(ac.get("lat")), _traffic_num(ac.get("lon"))
         dist = _traffic_num(ac.get("dst"))
-        if dist is None:
-            dist = haversine_nm(rec["lat"], rec["lon"],
-                                _traffic_num(ac.get("lat")) or 0.0,
-                                _traffic_num(ac.get("lon")) or 0.0)
+        if dist is None and aclat is not None and aclon is not None:
+            dist = haversine_nm(rec["lat"], rec["lon"], aclat, aclon)
+        to_field = (bearing_deg(aclat, aclon, rec["lat"], rec["lon"])
+                    if aclat is not None and aclon is not None else None)
+        phase, alt = _traffic_phase(ac, to_field, dist)
+        # An aeroplane sitting on a ramp twenty miles away is at a different
+        # airport, not at this one, and listing it as on the ground here is the
+        # same error as calling a neighbour's departure ours.
+        if phase == "ground" and dist is not None and dist > TRAFFIC_GROUND_NM:
+            continue
         out.append({
             "flight": str(ac.get("flight") or "").strip(),
             "reg": str(ac.get("r") or "").strip(),
@@ -4126,6 +4200,14 @@ def fetch_traffic(rec, radius_nm=TRAFFIC_RADIUS_NM, refresh=False):
             "speed": int(_traffic_num(ac.get("gs")) or 0) or None,
             "rate": int(_traffic_num(ac.get("baro_rate")) or 0) or None,
             "distance_nm": round(dist, 1) if dist is not None else None,
+            # Position and heading are for the scope view; the table ignores
+            # them. Rounded because six decimals of latitude is about 10 cm.
+            "lat": round(_traffic_num(ac.get("lat")), 5)
+                   if _traffic_num(ac.get("lat")) is not None else None,
+            "lon": round(_traffic_num(ac.get("lon")), 5)
+                   if _traffic_num(ac.get("lon")) is not None else None,
+            "track": round(_traffic_num(ac.get("track")) or 0.0, 1)
+                     if ac.get("track") is not None else None,
             "squawk": str(ac.get("squawk") or "").strip(),
             "emergency": str(ac.get("emergency") or "").strip().lower()
                          not in ("", "none"),
@@ -4133,6 +4215,10 @@ def fetch_traffic(rec, radius_nm=TRAFFIC_RADIUS_NM, refresh=False):
     out.sort(key=lambda a: (TRAFFIC_ORDER.get(a["phase"], 9),
                             a["distance_nm"] if a["distance_nm"] is not None else 1e9))
     result = {"available": True, "aircraft": out, "seen": len(out),
+              # The scope draws everything relative to the field, so the field
+              # travels with the traffic rather than being looked up twice.
+              "center": {"lat": rec["lat"], "lon": rec["lon"],
+                         "ident": display_id(rec)},
               "radius_nm": radius, "attribution": ADSB_ATTRIB,
               "updated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     try:
@@ -4584,9 +4670,11 @@ def cmd_traffic(args):
                             labels.get(shown, shown.upper())))
         alt = "ground" if ac["phase"] == "ground" else (
             "%s ft" % format(ac["altitude"], ",") if ac["altitude"] is not None else "-")
-        print("  %-9s %-6s %-7s %9s %6s %7s" % (
+        print("  %-9s %-6s %-7s %9s %5s %6s %7s" % (
             ac["flight"] or ac["reg"] or ac["squawk"] or "?", ac["type"],
             ac["reg"], alt,
+            "%03d°" % round(ac["track"] % 360)
+            if ac["track"] is not None and ac["phase"] != "ground" else "",
             "%d kt" % ac["speed"] if ac["speed"] else "",
             "%.1f nm" % ac["distance_nm"] if ac["distance_nm"] is not None else ""))
     counts = traffic_counts(result)

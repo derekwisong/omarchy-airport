@@ -39,6 +39,7 @@ Item {
   property string fboIdent: ""
   property string amenitiesIdent: ""
   property string trafficIdent: ""
+  property int trafficRadius: 0   // the range the loaded payload was fetched at
   // The local record renders on its own; conditions and TFRs arrive after.
   property bool liveLoading: false
   onLiveLoadingChanged: {
@@ -56,6 +57,11 @@ Item {
   property bool amenitiesLoading: false
   property var traffic: null
   property bool trafficLoading: false
+  // Table or scope, and how far out. One range for both views, so switching
+  // between them never quietly changes what you are looking at.
+  property bool trafficMap: false
+  property int trafficRange: 25
+  readonly property var trafficRanges: [10, 25, 50, 100]
 
   // Cache state. The engine keeps one 28-day FAA cycle in SQLite; the first
   // run has to fetch it, and every 28 days it has to fetch it again. Rather
@@ -305,6 +311,7 @@ Item {
     root.fboIdent = ""
     root.amenitiesIdent = ""
     root.trafficIdent = ""
+    root.trafficRadius = 0
     root.amenityFilter = ""
     root.amenityTerminal = ""
     if (panelProcess.running) panelProcess.running = false
@@ -357,14 +364,27 @@ Item {
     }
   }
 
+  function stepTrafficRange(delta) {
+    var ranges = root.trafficRanges
+    var at = ranges.indexOf(root.trafficRange)
+    if (at < 0) at = 1
+    var next = Math.max(0, Math.min(ranges.length - 1, at + delta))
+    if (ranges[next] === root.trafficRange) return
+    root.trafficRange = ranges[next]
+    root.ensureTraffic(true)
+  }
+
   function ensureTraffic(force) {
     if (!root.currentIdent) return
     if (root.trafficLoading) return
-    if (!force && root.traffic && root.trafficIdent === root.currentIdent) return
+    if (!force && root.traffic && root.trafficIdent === root.currentIdent
+        && root.trafficRadius === root.trafficRange) return
+    root.trafficRadius = root.trafficRange
     root.trafficLoading = true
     root.trafficIdent = root.currentIdent
     trafficProcess.command = ["python3", root.engine, "traffic",
-                              root.currentIdent, "--json"]
+                              root.currentIdent, "--radius",
+                              String(root.trafficRange), "--json"]
     trafficProcess.running = true
   }
 
@@ -824,6 +844,17 @@ Item {
                     && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) {
                   root.cycleTerminal(event.key === Qt.Key_Backtab ? -1 : 1)
                   event.accepted = true
+                  // Same key on Traffic, same reason: the page has a view of
+                  // its own to switch and the arrows are already spoken for.
+                } else if (root.tab === root.tabTraffic
+                           && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) {
+                  root.trafficMap = !root.trafficMap
+                  event.accepted = true
+                } else if (root.tab === root.tabTraffic
+                           && (event.key === Qt.Key_BracketLeft
+                               || event.key === Qt.Key_BracketRight)) {
+                  root.stepTrafficRange(event.key === Qt.Key_BracketRight ? 1 : -1)
+                  event.accepted = true
                 } else if (event.key === Qt.Key_Delete
                            && (event.modifiers & Qt.ShiftModifier)) {
                   root.forgetSelected()
@@ -976,10 +1007,18 @@ Item {
               spacing: Style.space(3)
               visible: !!root.header
 
-              Row {
-                spacing: Style.space(10)
+              // The header sits above every page, so every line it takes is a
+              // line the page below loses. Six stacked rows became three: the
+              // name reads across from the identifier, the clock uses the
+              // right-hand space that was empty, and the facts that each had a
+              // row - ICAO, place, elevation - share one muted line.
+              Item {
+                width: parent.width
+                height: Math.max(identText.implicitHeight, clockCol.implicitHeight)
 
                 Text {
+                  id: identText
+                  anchors.left: parent.left
                   anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
                   text: (root.header && root.header.ident) || ""
@@ -989,77 +1028,89 @@ Item {
                   font.bold: true
                 }
 
-                // The ICAO form of the same field. Not the name of the place -
-                // that is the identifier to its left - but the one you file a
-                // flight plan under, so it stays within reach.
+                // Reads across from the identifier rather than under it, and
+                // gives way to the clock rather than sliding beneath it.
+                Text {
+                  anchors.left: identText.right
+                  anchors.leftMargin: Style.space(10)
+                  anchors.right: clockCol.left
+                  anchors.rightMargin: Style.space(12)
+                  anchors.baseline: identText.baseline
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: (root.header && root.header.name) || ""
+                  color: Color.menu.text
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.title
+                }
+
+                // What time it is where you are going. Absent entirely when
+                // the zone was never established - a wrong hour is worse than
+                // no hour - and the name simply takes the space back.
+                Column {
+                  id: clockCol
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: 0
+                  visible: !!Model.localClock(root.localTime, root.clockTick)
+
+                  Text {
+                    anchors.right: parent.right
+                    textFormat: Text.PlainText
+                    text: Model.localClock(root.localTime, root.clockTick)
+                    color: Color.menu.text
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
+                  Text {
+                    anchors.right: parent.right
+                    textFormat: Text.PlainText
+                    text: Model.localDate(root.localTime, root.clockTick)
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(8)
+
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
-                  visible: !!(root.header && root.header.icao)
                   textFormat: Text.PlainText
-                  text: root.header ? (root.header.icao || "") : ""
+                  text: Model.headerFacts(root.header)
                   color: Color.muted
-                  font.family: "monospace"
+                  font.family: Style.font.family
                   font.pixelSize: Style.font.bodySmall
                 }
 
+                // The flight category was a filled pill, which made the one
+                // thing on the page that is only ever a hint shout louder than
+                // the airport's own name. A dot carries the same colour and
+                // asks for none of the attention.
                 Rectangle {
                   anchors.verticalCenter: parent.verticalCenter
                   visible: !!(root.header && root.header.category)
-                  radius: Style.cornerRadius
-                  color: Model.categoryColor((root.header && root.header.category) || "", Color.muted)
-                  implicitWidth: catText.implicitWidth + Style.space(14)
-                  implicitHeight: catText.implicitHeight + Style.space(6)
-                  Text {
-                    id: catText
-                    anchors.centerIn: parent
-                    textFormat: Text.PlainText
-                    text: root.header ? (root.header.category || "") : ""
-                    color: Color.background
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
-                    font.bold: true
-                  }
+                  width: Style.space(8)
+                  height: width
+                  radius: width / 2
+                  color: Model.categoryColor(
+                    (root.header && root.header.category) || "", Color.muted)
                 }
 
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
+                  visible: !!(root.header && root.header.category)
                   textFormat: Text.PlainText
-                  text: root.header && root.header.elev !== null
-                    ? "elev " + Model.feet(root.header.elev) : ""
+                  text: root.header ? (root.header.category || "") : ""
                   color: Color.muted
                   font.family: Style.font.family
-                  font.pixelSize: Style.font.body
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
                 }
-              }
-
-              Text {
-                width: parent.width
-                elide: Text.ElideRight
-                textFormat: Text.PlainText
-                text: (root.header && root.header.name) || ""
-                color: Color.menu.text
-                font.family: Style.font.family
-                font.pixelSize: Style.font.title
-              }
-
-              Text {
-                textFormat: Text.PlainText
-                text: (root.header && root.header.where) || ""
-                color: Color.muted
-                font.family: Style.font.family
-                font.pixelSize: Style.font.bodySmall
-              }
-
-              // What time it is where you are going. In the header because it
-              // is true on every page, and absent entirely when the zone was
-              // never established - a wrong hour is worse than no hour.
-              Text {
-                visible: !!Model.localClock(root.localTime, root.clockTick)
-                textFormat: Text.PlainText
-                text: Model.localClock(root.localTime, root.clockTick)
-                color: Color.menu.text
-                font.family: Style.font.family
-                font.pixelSize: Style.font.bodySmall
               }
 
               Text {
@@ -1116,10 +1167,14 @@ Item {
             }
 
             // ---- tabs ----
+            // Nine of them at twenty units of padding each spent a quarter of
+            // the bar on empty space, which pushed the row onto a second line.
+            // Every name is doing work and none abbreviates without losing
+            // something, so the padding gives way rather than the words.
             Flow {
               visible: !!root.header
               width: parent.width
-              spacing: Style.space(4)
+              spacing: Style.space(3)
 
               Repeater {
                 model: root.tabNames
@@ -1127,8 +1182,8 @@ Item {
                   required property string modelData
                   required property int index
                   radius: Style.cornerRadius
-                  implicitWidth: tabLabel.implicitWidth + Style.space(20)
-                  implicitHeight: tabLabel.implicitHeight + Style.space(10)
+                  implicitWidth: tabLabel.implicitWidth + Style.space(12)
+                  implicitHeight: tabLabel.implicitHeight + Style.space(8)
                   color: index === root.tab ? Style.selectedFill
                     : (tabMouse.containsMouse ? Style.hoverFill : "transparent")
 
@@ -1412,7 +1467,7 @@ Item {
                   // changes your day, and it is the reason a traveller opened
                   // this page at all.
                   Repeater {
-                    model: Model.statusLines(root.status)
+                    model: Model.statusLines(root.status, String(Color.accent))
                     delegate: Text {
                       required property var modelData
                       width: parent.width
@@ -1422,19 +1477,36 @@ Item {
                       textFormat: Text.RichText
                       text: modelData.html
                       color: modelData.alert ? Color.menu.text : Color.muted
-                      linkColor: Color.accent
                       font.family: Style.font.family
                       font.pixelSize: modelData.alert ? Style.font.body
                                                       : Style.font.caption
                       font.bold: modelData.alert === true
-                      onLinkActivated: function (link) { root.openLink(link) }
+
+                      // Text.onLinkActivated never fires for these rows: they
+                      // sit inside the body Flickable, which takes the press
+                      // first. So the click is handled here, and the press is
+                      // only accepted when the pointer is actually on a link -
+                      // anywhere else it falls through and still scrolls.
+                      MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: parent.linkAt(mouseX, mouseY)
+                          ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onPressed: function (mouse) {
+                          mouse.accepted = !!parent.linkAt(mouse.x, mouse.y)
+                        }
+                        onClicked: function (mouse) {
+                          var link = parent.linkAt(mouse.x, mouse.y)
+                          if (link) root.openLink(link)
+                        }
+                      }
                     }
                   }
 
                   Item {
                     width: 1
                     height: Style.space(4)
-                    visible: Model.statusLines(root.status).length > 0
+                    visible: Model.statusLines(root.status, '').length > 0
                   }
 
                   // Its own heading under the one above: a delay program and
@@ -1453,7 +1525,8 @@ Item {
                   // else sits back, so nine restrictions at once read as a
                   // list rather than a wall.
                   Repeater {
-                    model: Model.tfrRows(root.tfr, root.header ? root.header.us : true)
+                    model: Model.tfrRows(root.tfr, root.header ? root.header.us : true,
+                                         String(Color.accent))
                     delegate: Row {
                       required property var modelData
                       width: parent.width
@@ -1490,10 +1563,27 @@ Item {
                         textFormat: Text.RichText
                         text: modelData.html
                         color: Color.menu.text
-                        linkColor: Color.accent
                         font.family: Style.font.family
                         font.pixelSize: Style.font.bodySmall
-                        onLinkActivated: function (link) { root.openLink(link) }
+
+                        // Text.onLinkActivated never fires for these rows: they
+                        // sit inside the body Flickable, which takes the press
+                        // first. So the click is handled here, and the press is
+                        // only accepted when the pointer is actually on a link -
+                        // anywhere else it falls through and still scrolls.
+                        MouseArea {
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          cursorShape: parent.linkAt(mouseX, mouseY)
+                            ? Qt.PointingHandCursor : Qt.ArrowCursor
+                          onPressed: function (mouse) {
+                            mouse.accepted = !!parent.linkAt(mouse.x, mouse.y)
+                          }
+                          onClicked: function (mouse) {
+                            var link = parent.linkAt(mouse.x, mouse.y)
+                            if (link) root.openLink(link)
+                          }
+                        }
                       }
                     }
                   }
@@ -1505,12 +1595,30 @@ Item {
                     width: parent.width
                     wrapMode: Text.WordWrap
                     textFormat: Text.RichText
-                    text: Model.tfrNote(root.tfr, root.header ? root.header.us : true)
+                    text: Model.tfrNote(root.tfr, root.header ? root.header.us : true,
+                                        String(Color.accent))
                     color: Color.muted
-                    linkColor: Color.accent
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
-                    onLinkActivated: function (link) { root.openLink(link) }
+
+                    // Text.onLinkActivated never fires for these rows: they
+                    // sit inside the body Flickable, which takes the press
+                    // first. So the click is handled here, and the press is
+                    // only accepted when the pointer is actually on a link -
+                    // anywhere else it falls through and still scrolls.
+                    MouseArea {
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: parent.linkAt(mouseX, mouseY)
+                        ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      onPressed: function (mouse) {
+                        mouse.accepted = !!parent.linkAt(mouse.x, mouse.y)
+                      }
+                      onClicked: function (mouse) {
+                        var link = parent.linkAt(mouse.x, mouse.y)
+                        if (link) root.openLink(link)
+                      }
+                    }
                   }
 
                   Item { width: 1; height: Style.space(4) }
@@ -1795,6 +1903,89 @@ Item {
                   width: parent.width
                   spacing: Style.space(4)
 
+                  // View switch and range, clickable as well as keyed, so
+                  // neither is a secret. Tab flips the view, [ and ] step the
+                  // range - both said out loud in the row itself.
+                  Row {
+                    width: parent.width
+                    spacing: Style.space(6)
+
+                    Repeater {
+                      model: [{ label: "Table", map: false }, { label: "Map", map: true }]
+                      delegate: Rectangle {
+                        required property var modelData
+                        radius: Style.cornerRadius
+                        implicitWidth: viewLabel.implicitWidth + Style.space(16)
+                        implicitHeight: viewLabel.implicitHeight + Style.space(6)
+                        color: modelData.map === root.trafficMap ? Style.selectedFill
+                          : (viewMouse.containsMouse ? Style.hoverFill : "transparent")
+                        Text {
+                          id: viewLabel
+                          anchors.centerIn: parent
+                          text: modelData.label
+                          color: modelData.map === root.trafficMap
+                            ? Color.menu.selectedText : Color.muted
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                          font.bold: modelData.map === root.trafficMap
+                        }
+                        MouseArea {
+                          id: viewMouse
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          cursorShape: Qt.PointingHandCursor
+                          onClicked: root.trafficMap = modelData.map
+                        }
+                      }
+                    }
+
+                    Item { width: Style.space(10); height: 1 }
+
+                    Repeater {
+                      model: root.trafficRanges
+                      delegate: Rectangle {
+                        required property int modelData
+                        radius: Style.cornerRadius
+                        implicitWidth: rangeLabel.implicitWidth + Style.space(14)
+                        implicitHeight: rangeLabel.implicitHeight + Style.space(6)
+                        color: modelData === root.trafficRange ? Style.selectedFill
+                          : (rangeMouse.containsMouse ? Style.hoverFill : "transparent")
+                        Text {
+                          id: rangeLabel
+                          anchors.centerIn: parent
+                          text: modelData + " nm"
+                          color: modelData === root.trafficRange
+                            ? Color.menu.selectedText : Color.muted
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                          font.bold: modelData === root.trafficRange
+                        }
+                        MouseArea {
+                          id: rangeMouse
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          cursorShape: Qt.PointingHandCursor
+                          onClicked: {
+                            if (modelData === root.trafficRange) return
+                            root.trafficRange = modelData
+                            root.ensureTraffic(true)
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  Text {
+                    width: parent.width
+                    textFormat: Text.PlainText
+                    text: "Tab switches view · [ and ] step the range"
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Item { width: 1; height: Style.space(4) }
+
                   Text {
                     visible: root.trafficLoading && !root.traffic
                     text: "Listening…"
@@ -1804,8 +1995,45 @@ Item {
                     font.italic: true
                   }
 
+                  // ---- the scope ----
+                  // A plan view centred on the field, not a globe: 25 nm is
+                  // 0.4 degrees of latitude, which on a globe drawn from any
+                  // ordinary country outline is a single dot. Rings, the real
+                  // runway layout from the cache, and a chevron per aircraft
+                  // turned to its own track.
+                  Canvas {
+                    id: scope
+                    visible: root.trafficMap
+                    width: parent.width
+                    height: visible ? Math.min(parent.width, Style.space(430)) : 0
+                    renderStrategy: Canvas.Cooperative
+
+                    property var payload: root.traffic
+                    property int range: root.trafficRange
+                    property var strips: (root.runwayData && root.runwayData.runways)
+                      ? root.runwayData.runways : []
+                    onPayloadChanged: requestPaint()
+                    onRangeChanged: requestPaint()
+                    onStripsChanged: requestPaint()
+                    onWidthChanged: requestPaint()
+
+                    // The drawing itself lives in Model.js so it can be
+                    // rendered and checked outside a running shell.
+                    onPaint: Model.paintScope(getContext("2d"), {
+                      width: width, height: height,
+                      payload: payload, range: range, strips: strips,
+                      rings: Model.scopeRings(range),
+                      pad: Style.space(16),
+                      runwayWidth: Math.max(2, Style.space(3)),
+                      font: Math.round(Style.font.caption) + "px " + Style.font.family,
+                      muted: String(Color.muted),
+                      ink: String(Color.menu.text),
+                      accent: String(Color.accent)
+                    })
+                  }
+
                   Repeater {
-                    model: Model.trafficGroups(root.traffic)
+                    model: root.trafficMap ? [] : Model.trafficGroups(root.traffic)
                     delegate: Column {
                       required property var modelData
                       width: parent.width

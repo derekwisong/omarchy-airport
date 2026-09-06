@@ -375,16 +375,41 @@ var CLOCK_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 
 // The tick argument is unused: it exists so a binding re-evaluates every
 // minute, the same way the forecast band's readouts do.
-function localClock(local, tick) {
+function localAt(local) {
   if (!local || local.offset_minutes === undefined
-      || local.offset_minutes === null) return ""
+      || local.offset_minutes === null) return null
   // Shift into the airport's offset, then read the shifted instant as UTC.
-  var d = new Date(Date.now() + local.offset_minutes * 60000)
-  var hh = ("0" + d.getUTCHours()).slice(-2)
-  var mm = ("0" + d.getUTCMinutes()).slice(-2)
-  return hh + ":" + mm + (local.abbrev ? " " + local.abbrev : "")
-    + "  ·  " + CLOCK_DAYS[d.getUTCDay()] + " " + d.getUTCDate()
+  return new Date(Date.now() + local.offset_minutes * 60000)
+}
+
+
+function localClock(local, tick) {
+  var d = localAt(local)
+  if (!d) return ""
+  return ("0" + d.getUTCHours()).slice(-2) + ":" + ("0" + d.getUTCMinutes()).slice(-2)
+    + (local.abbrev ? " " + local.abbrev : "")
+}
+
+
+function localDate(local, tick) {
+  var d = localAt(local)
+  if (!d) return ""
+  return CLOCK_DAYS[d.getUTCDay()] + " " + d.getUTCDate()
     + " " + CLOCK_MONTHS[d.getUTCMonth()]
+}
+
+
+// The facts that used to each own a line: the ICAO form you file under, where
+// the field is, and how high. One muted line under the name instead of three
+// stacked ones, because none of them is worth a line of its own.
+function headerFacts(header) {
+  if (!header) return ""
+  var bits = []
+  if (header.icao) bits.push(header.icao)
+  if (header.where) bits.push(header.where)
+  if (header.elev !== null && header.elev !== undefined)
+    bits.push("elev " + feet(header.elev))
+  return bits.join("  ·  ")
 }
 
 
@@ -418,6 +443,162 @@ function trafficGroups(traffic) {
 }
 
 
+// Range rings for the scope: a couple of intermediate marks plus the radius
+// actually asked for, which is always the last and is drawn solid.
+var SCOPE_RINGS = { 10: [2, 5, 10], 25: [5, 10, 25], 50: [10, 25, 50],
+                    100: [25, 50, 100] }
+
+// The scope, drawn onto a 2D context.
+//
+// A plan view centred on the field rather than a globe, because 25 nm is 0.42
+// degrees of latitude: on a globe drawn from any ordinary country outline the
+// whole picture is one dot. Everything here is local-flat - at these ranges
+// the error against a proper projection is far under a pixel.
+//
+// Lives here rather than inline in the Canvas so it can be rendered and looked
+// at without a running shell.
+function paintScope(ctx, o) {
+  var centre = o.payload ? o.payload.center : null
+  var cx = o.width / 2, cy = o.height / 2
+  var rpx = Math.min(o.width, o.height) / 2 - o.pad
+  ctx.reset()
+  if (!ctx || rpx <= 4 || !centre) return false
+  var scale = rpx / Math.max(1, o.range)
+  var coslat = Math.cos(centre.lat * Math.PI / 180)
+  ctx.font = o.font
+
+  function at(lat, lon) {
+    return [cx + (lon - centre.lon) * 60 * coslat * scale,
+            cy - (lat - centre.lat) * 60 * scale]
+  }
+
+  // Range rings. The outermost is the radius actually asked for, so it is
+  // solid and the intermediate marks are dashed.
+  var rings = o.rings || []
+  ctx.strokeStyle = o.muted
+  ctx.lineWidth = 1
+  for (var i = 0; i < rings.length; i++) {
+    var rr = rings[i] * scale
+    if (rr > rpx + 0.5) continue
+    ctx.globalAlpha = 0.35
+    ctx.beginPath()
+    ctx.setLineDash(i === rings.length - 1 ? [] : [3, 5])
+    ctx.arc(cx, cy, rr, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+  ctx.setLineDash([])
+
+  // Ring labels on the north-east diagonal, where nothing else lives; on the
+  // north spoke they fought with the "N". Drawn first and their boxes kept, so
+  // an aircraft tag later on gives way to them rather than overprinting.
+  var placed = []
+  ctx.globalAlpha = 0.8
+  ctx.fillStyle = o.muted
+  ctx.textAlign = "center"
+  for (i = 0; i < rings.length; i++) {
+    rr = rings[i] * scale
+    if (rr > rpx + 0.5) continue
+    var lx = cx + Math.SQRT1_2 * rr, ly = cy - Math.SQRT1_2 * rr - 3
+    var label = rings[i] + " nm"
+    placed.push([lx - label.length * 3.3, ly - 8, lx + label.length * 3.3, ly + 4])
+    ctx.fillText(label, lx, ly)
+  }
+  var marks = [[0, "N"], [90, "E"], [180, "S"], [270, "W"]]
+  for (i = 0; i < marks.length; i++) {
+    var a = marks[i][0] * Math.PI / 180
+    ctx.fillText(marks[i][1], cx + Math.sin(a) * (rpx + o.pad * 0.55),
+                 cy - Math.cos(a) * (rpx + o.pad * 0.55) + 4)
+  }
+  ctx.globalAlpha = 1
+
+  // The field itself, to scale, from runway end coordinates already in hand.
+  ctx.strokeStyle = o.ink
+  ctx.lineWidth = o.runwayWidth
+  ctx.lineCap = "butt"
+  var strips = o.strips || []
+  for (i = 0; i < strips.length; i++) {
+    var ends = strips[i].ends || []
+    if (ends.length !== 2 || !ends[0].lat || !ends[1].lat) continue
+    var p = at(ends[0].lat, ends[0].lon), q = at(ends[1].lat, ends[1].lon)
+    ctx.beginPath()
+    ctx.moveTo(p[0], p[1])
+    ctx.lineTo(q[0], q[1])
+    ctx.stroke()
+  }
+
+  var list = (o.payload && o.payload.aircraft) || []
+  var drawn = 0
+  for (i = 0; i < list.length; i++) {
+    var ac = list[i]
+    if (ac.lat === null || ac.lat === undefined) continue
+    var pt = at(ac.lat, ac.lon)
+    var off = Math.sqrt((pt[0] - cx) * (pt[0] - cx) + (pt[1] - cy) * (pt[1] - cy))
+    if (off > rpx) continue
+    drawn++
+    if (ac.phase === "ground") {
+      ctx.globalAlpha = 0.45
+      ctx.fillStyle = o.muted
+      ctx.beginPath()
+      ctx.arc(pt[0], pt[1], 1.6, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = 1
+      continue
+    }
+    // Filled for arriving, hollow for departing: the two are told apart by
+    // shape as well as colour, so the scope still reads on a theme where the
+    // two tints land close together, or to a colourblind eye.
+    var arriving = ac.phase === "arriving", departing = ac.phase === "departing"
+    var tint = arriving ? o.accent : (departing ? o.ink : o.muted)
+    ctx.save()
+    ctx.translate(pt[0], pt[1])
+    ctx.rotate((ac.track || 0) * Math.PI / 180)
+    ctx.beginPath()
+    ctx.moveTo(0, -7)
+    ctx.lineTo(4.6, 6)
+    ctx.lineTo(0, 3.2)
+    ctx.lineTo(-4.6, 6)
+    ctx.closePath()
+    if (departing) {
+      ctx.strokeStyle = tint
+      ctx.lineWidth = 1.4
+      ctx.stroke()
+    } else {
+      ctx.fillStyle = tint
+      ctx.globalAlpha = arriving ? 1 : 0.5
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+    ctx.restore()
+
+    if (!arriving && !departing) continue
+    var name = ac.flight || ac.reg || ""
+    if (!name) continue
+    // A tag that would land on one already drawn is dropped. A clean scope
+    // missing a few labels beats an unreadable one.
+    var box = [pt[0] + 7, pt[1] - 8, pt[0] + 7 + name.length * 6.5, pt[1] + 4]
+    var clash = false
+    for (var j = 0; j < placed.length; j++) {
+      var b = placed[j]
+      if (box[0] < b[2] && b[0] < box[2] && box[1] < b[3] && b[1] < box[3]) {
+        clash = true
+        break
+      }
+    }
+    if (clash) continue
+    placed.push(box)
+    ctx.textAlign = "left"
+    ctx.fillStyle = tint
+    ctx.fillText(name, pt[0] + 7, pt[1] + 1)
+  }
+  return drawn
+}
+
+
+function scopeRings(range) {
+  return SCOPE_RINGS[range] || [Math.round(range / 2), range]
+}
+
+
 function trafficRow(a) {
   return {
     call: a.flight || a.reg || (a.squawk ? "squawk " + a.squawk : "unknown"),
@@ -433,6 +614,10 @@ function trafficDetail(a) {
   if (a.phase === "ground") bits.push("on the ground")
   else if (a.altitude !== null && a.altitude !== undefined)
     bits.push(commas(a.altitude) + " ft")
+  // Height, then which way, then how fast - the order you would ask them in.
+  // Zero-padded to three digits, the way a heading is written and read.
+  if (a.track !== null && a.track !== undefined && a.phase !== "ground")
+    bits.push(("00" + Math.round(a.track % 360)).slice(-3) + "°")
   if (a.speed) bits.push(a.speed + " kt")
   if (a.distance_nm !== null && a.distance_nm !== undefined)
     bits.push(a.distance_nm + " nm")
@@ -485,7 +670,7 @@ var TFR_ROWS = 5
 // presidential visit has nine of these at once, and as one bold line each they
 // were a wall of text with the distance - the only part anyone scans for -
 // buried in the middle of it.
-function tfrRows(t, us) {
+function tfrRows(t, us, tint) {
   if (us === false) return []
   if (!t || !t.available) return []
   var list = t.tfrs || []
@@ -501,7 +686,7 @@ function tfrRows(t, us) {
       kind: (f.type || "").toLowerCase(),
       html: escapeHtml(statusTrim(what))
         + (f.when ? "  <i>" + escapeHtml(f.when) + "</i>" : "")
-        + advisoryLink(f.url, "detail")
+        + advisoryLink(f.url, "detail", tint)
     })
   }
   return out
@@ -511,7 +696,7 @@ function tfrRows(t, us) {
 // What the rows leave out, and what could not be placed on a map at all. Shown
 // even when there are no rows, because "none within 50 nm" is the answer to
 // the question the heading just asked.
-function tfrNote(t, us) {
+function tfrNote(t, us, tint) {
   if (us === false) return ""
   if (!t || !t.available) return ""
   var list = t.tfrs || []
@@ -526,7 +711,7 @@ function tfrNote(t, us) {
     notes.push(t.nationwide + " standing nationwide notice"
                + (t.nationwide === 1 ? "" : "s"))
   if (t.unlocated) notes.push(t.unlocated + " could not be located")
-  return escapeHtml(notes.join(" · ")) + advisoryLink(TFR_LIST_URL, "TFR list")
+  return escapeHtml(notes.join(" · ")) + advisoryLink(TFR_LIST_URL, "TFR list", tint)
 }
 
 
@@ -558,7 +743,7 @@ function statusRemaining(iso) {
 // next to a row reading "Airport closure", it was read as the airport being
 // shut — so the headline names who is actually held and the caption says the
 // field is open.
-function statusLines(s) {
+function statusLines(s, tint) {
   if (!s || !s.available) return []
   var items = s.items || []
   var out = []
@@ -574,7 +759,7 @@ function statusLines(s) {
     // The caption is not trimmed: it is the line carrying "the field is open",
     // and a cut there loses exactly the thing this row exists to say.
     var caption = (it.caption && it.caption !== head) ? it.caption : ""
-    var link = statusLink(it.url)
+    var link = statusLink(it.url, tint)
     if (caption || link)
       out.push({ label: "", text: caption, alert: false,
                  html: escapeHtml(caption) + link })
@@ -593,15 +778,19 @@ function statusLines(s) {
 // The URL comes out of the feed, so it goes through the same two gates as any
 // other mapped data reaching markup: http(s) only, then escaped. The FAA
 // writes the advisory title into the query string, spaces and all.
-function statusLink(url) {
-  return advisoryLink(url, "FAA advisory")
+function statusLink(url, tint) {
+  return advisoryLink(url, "FAA advisory", tint)
 }
 
 
-function advisoryLink(url, label) {
+// The colour is passed in and written into the tag rather than left to the
+// Text's linkColor, which is what every other link in the panel does and is
+// the only way the theme's accent actually reaches an anchor.
+function advisoryLink(url, label, tint) {
   var safe = safeUrl(url)
   if (!safe) return ""
-  return "   <a href=\'" + escapeHtml(safe.replace(/ /g, "%20")) + "\'>"
+  return "   <a href=\'" + escapeHtml(safe.replace(/ /g, "%20")) + "\'"
+    + (tint ? " style=\'color:" + escapeHtml(tint) + "\'" : "") + ">"
     + escapeHtml(label) + "</a>"
 }
 

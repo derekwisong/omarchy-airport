@@ -7,7 +7,8 @@ const src = fs.readFileSync(__dirname + "/../Model.js", "utf8")
   .split("\n").filter(l => !l.trim().startsWith(".pragma")).join("\n");
 const m = {};
 new Function("e", src + "; e.escapeHtml = escapeHtml; e.safeUrl = safeUrl;"
-  + " e.statusLink = statusLink; e.statusLines = statusLines;")(m);
+  + " e.statusLink = statusLink; e.statusLines = statusLines;"
+  + " e.advisoryLink = advisoryLink;")(m);
 
 let failed = 0;
 function check(name, got, want) {
@@ -39,6 +40,15 @@ check("advisory title's spaces are encoded",
   m.statusLink("https://a/b?title=CDM GROUND STOP"),
   "   <a href='https://a/b?title=CDM%20GROUND%20STOP'>FAA advisory</a>");
 check("no url, no link", m.statusLink(""), "");
+// The link colour is written into a style attribute, so it is escaped too - a
+// theme value is not attacker-controlled, but nothing reaches markup unescaped.
+check("link colour is applied",
+  m.advisoryLink("https://a/b", "detail", "#4488ff"),
+  "   <a href='https://a/b' style='color:#4488ff'>detail</a>");
+check("a colour cannot close its attribute",
+  m.advisoryLink("https://a/b", "detail", "x';onload='y").indexOf("';onload='"), -1);
+check("a label cannot inject markup",
+  m.advisoryLink("https://a/b", "<b>x</b>").indexOf("<b>"), -1);
 check("javascript: url draws no link", m.statusLink("javascript:alert(1)"), "");
 
 // A ground stop line is bold body text; nothing in it may be markup.

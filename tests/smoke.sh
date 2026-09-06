@@ -129,6 +129,15 @@ else
   echo "FAIL TFR distance maths"; python3 tests/geometry.py; fail=$((fail+1))
 fi
 
+# The scope draws onto a canvas, so it is checked against a recording one.
+if command -v node >/dev/null 2>&1; then
+  if node tests/scope.js >/dev/null 2>&1; then
+    echo "ok   traffic scope drawing"; pass=$((pass+1))
+  else
+    echo "FAIL traffic scope drawing"; node tests/scope.js; fail=$((fail+1))
+  fi
+fi
+
 # Traffic phase and local time, likewise offline.
 if python3 tests/traffic.py >/dev/null 2>&1; then
   echo "ok   traffic phase and clock"; pass=$((pass+1))
@@ -141,6 +150,10 @@ fi
 check "traffic payload"        '"aircraft"'   $APT traffic KATL --json
 check "traffic says seen"      "seen within"  $APT traffic KATL
 check "traffic credits ODbL"   "adsb.lol contributors, ODbL" $APT traffic KATL
+# The scope centres on the field and turns each aircraft to its own track, so
+# the payload has to carry a position for both.
+check "traffic carries the field" '"center"'   $APT traffic KATL --json
+check "traffic carries position"  '"track"'    $APT traffic KATL --json
 check "local time in payload"  '"zone"'       $APT live KATL
 check "arizona ignores DST"    "MST"          $APT live KPHX
 
