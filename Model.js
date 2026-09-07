@@ -244,8 +244,30 @@ function osmUrl(poi) {
   return "https://www.openstreetmap.org/" + poi.id
 }
 
+// METARs come out hourly, near :53, with specials in between. An hour old is
+// ordinary; much past that means a cycle was missed - worth saying, because a
+// stale report reads exactly like a fresh one.
+var METAR_STALE_MIN = 75
+
+// The tick argument is unused, as on the clock: it exists so the age
+// re-evaluates every minute rather than freezing at whatever it said when the
+// page was opened.
+function observedAge(w, tick) {
+  if (!w || !w.observed_epoch) return null
+  var minutes = Math.floor((Date.now() / 1000 - w.observed_epoch) / 60)
+  // A machine clock disagreeing with the feed is not an age. Say nothing.
+  if (minutes < 0) return null
+  return { minutes: minutes,
+           text: minutes < 1 ? "just now"
+             : (minutes < 60 ? minutes + " min ago"
+                : Math.floor(minutes / 60) + "h "
+                  + ("0" + (minutes % 60)).slice(-2) + "m ago"),
+           stale: minutes >= METAR_STALE_MIN }
+}
+
+
 // Weather detail rows: plain language first, the numbers a pilot needs after.
-function weatherRows(w, header) {
+function weatherRows(w, header, tick) {
   if (!w || !w.available) return []
   var rows = []
   function add(k, v, accent) { if (v) rows.push({ k: k, v: v, accent: accent === true }) }
@@ -263,7 +285,13 @@ function weatherRows(w, header) {
   add("Density altitude", w.density_alt ? feet(w.density_alt) : "")
   add("Civil twilight", w.twilight)
   add("Sunrise / sunset", w.sunrise && w.sunset ? w.sunrise + "  /  " + w.sunset : "")
-  add("Observed", w.observed)
+  // How old the observation is, not only when it was taken: an hour-old METAR
+  // and a fresh one look identical on the page, and only one of them is worth
+  // planning on.
+  var age = observedAge(w, tick)
+  if (w.observed)
+    rows.push({ k: "Observed", v: w.observed + (age ? "  ·  " + age.text : ""),
+                warn: !!age && age.stale })
   return rows
 }
 

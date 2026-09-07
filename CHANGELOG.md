@@ -27,6 +27,13 @@
 
 ### Fixed
 
+- **The observation was timed by the hour it was filed under, not when it was
+  taken.** A METAR observed at 1353Z is filed as the 14:00Z report, and the
+  panel printed the filing time - up to an hour wrong, and in the seven minutes
+  before the hour, a time in the future. It reads the observation's own
+  timestamp now, and says how long ago that was: "13:53Z · 22 min ago". Past 75
+  minutes - a missed cycle - the line turns red, because until now an hour-old
+  report and a fresh one looked exactly alike.
 - **The local time was missing on a field's first visit.** The zone is a
   network lookup cached per airport, and the first draw is built without the
   network, so a field seen for the first time had no clock. The answer arrived

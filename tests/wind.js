@@ -1,5 +1,6 @@
-// Wind components per runway end: a sum the panel prints as fact, so it is
-// checked here rather than by squinting at a running shell on a windy day.
+// Wind components per runway end, and how old the observation they came from
+// is. Both are sums the panel prints as fact, so they are checked here rather
+// than by squinting at a running shell on a windy day.
 const fs = require("fs");
 const src = fs.readFileSync(__dirname + "/../Model.js", "utf8")
   .split("\n").filter(l => !l.trim().startsWith(".pragma")).join("\n");
@@ -12,7 +13,7 @@ const Qt = { locale: () => "en-US" };
 Number.prototype.toLocaleString = function () { return String(this); };
 new Function("e", "Qt", src + "; e.windCell = windCell; e.windReady = windReady;"
   + " e.favouredEnd = favouredEnd; e.runwayRows = runwayRows;"
-  )(m, Qt);
+  + " e.observedAge = observedAge;")(m, Qt);
 
 let failed = 0;
 function check(name, got, want) {
@@ -60,5 +61,18 @@ check("a calm day favours nothing",
 check("the pair row carries the size, not a wind",
       m.runwayRows(strip, wx(90, 10))[0].wind, undefined);
 
+// The age of the observation, which is the difference between a report worth
+// planning on and one that only looks like it.
+const now = Date.now() / 1000;
+function age(minutes) { return m.observedAge({ observed_epoch: now - minutes * 60 }, 0); }
+check("minutes are minutes", age(22).text, "22 min ago");
+check("an hour is hours and minutes", age(95).text, "1h 35m ago");
+check("a fresh report says so", age(0.2).text, "just now");
+check("an hour-old report is not stale", age(60).stale, false);
+check("a missed cycle is stale", age(80).stale, true);
+// A machine clock ahead of the feed is not an age, and must not print as one.
+check("a report from the future is silent", age(-5), null);
+check("no timestamp is silent", m.observedAge({ observed: "13:53Z" }, 0), null);
+
 if (failed) process.exit(1);
-console.log("wind components ok");
+console.log("wind and observation age ok");

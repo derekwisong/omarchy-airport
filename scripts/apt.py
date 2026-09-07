@@ -2034,8 +2034,16 @@ def humanize_weather(metar, taf, elev):
         summary_bits.append("wind " + wind)
     summary = ", ".join(summary_bits) + "." if summary_bits else ""
 
+    # When the observation was taken, not the cycle it was filed under.
+    # reportTime is the nominal hour - a 1353Z METAR is filed as 14:00Z - so
+    # reading it as the observation time both dates the report wrong and, in
+    # the seven minutes before the hour, dates it into the future.
+    observed_epoch = metar_observed_epoch(metar)
     observed = ""
-    if metar.get("reportTime"):
+    if observed_epoch is not None:
+        observed = datetime.fromtimestamp(
+            observed_epoch, timezone.utc).strftime("%H:%MZ")
+    elif metar.get("reportTime"):
         observed = str(metar["reportTime"])[11:16] + "Z"
 
     # METAR wind is true-north referenced, and so is NASR's runway
@@ -2070,9 +2078,42 @@ def humanize_weather(metar, taf, elev):
         "pressure_alt": pressure,
         "density_alt": density,
         "observed": observed,
+        # The panel ages the report against this rather than against the
+        # string above, so a stale one can say so.
+        "observed_epoch": observed_epoch,
         "raw": metar.get("rawOb", ""),
         "taf": (taf or {}).get("rawTAF", "") if isinstance(taf, dict) else "",
     }
+
+
+# A METAR carries two times: obsTime, the moment the observation was taken,
+# and reportTime, the hour it is filed under. They differ by up to an hour.
+def metar_observed_epoch(metar):
+    """When the observation was taken, as a UTC epoch, or None."""
+    try:
+        stamp = int(metar.get("obsTime") or 0)
+    except (TypeError, ValueError):
+        return None
+    return stamp or None
+
+
+# METARs come out hourly, near :53, with specials in between. An hour old is
+# ordinary; much past that means a cycle was missed, which is worth saying,
+# because a stale report reads exactly like a fresh one.
+METAR_STALE_MIN = 75
+
+
+def metar_age_text(epoch, now=None):
+    """How long ago the observation was taken, in words."""
+    seconds = (now or datetime.now(timezone.utc)).timestamp() - epoch
+    minutes = int(seconds // 60)
+    if minutes < 0:
+        return ""          # a clock disagreeing with the feed is not an age
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return "%d min ago" % minutes
+    return "%dh %02dm ago" % (minutes // 60, minutes % 60)
 
 
 # Frequencies worth showing on a field page, in the order a pilot reads them.
@@ -3369,7 +3410,12 @@ def cmd_wx(args):
             parts.append("wind %s@%s" % (metar["wdir"], metar.get("wspd")))
         if metar.get("altim"):
             parts.append("altimeter %.2f inHg" % (metar["altim"] / 33.8639))
-        if metar.get("reportTime"):
+        obs_epoch = metar_observed_epoch(metar)
+        if obs_epoch is not None:
+            parts.append("obs %sZ  (%s)" % (
+                datetime.fromtimestamp(obs_epoch, timezone.utc).strftime("%H:%M"),
+                metar_age_text(obs_epoch)))
+        elif metar.get("reportTime"):
             parts.append("obs %sZ" % str(metar["reportTime"])[11:16])
         print("  " + "  ·  ".join(parts))
         # Density altitude matters for GA performance planning.

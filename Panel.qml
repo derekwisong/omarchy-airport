@@ -1759,7 +1759,8 @@ Item {
                   }
 
                   Repeater {
-                    model: Model.weatherRows(root.weather, root.header)
+                    model: Model.weatherRows(root.weather, root.header,
+                                             root.clockTick)
                     delegate: Row {
                       required property var modelData
                       visible: !!modelData.v
@@ -1778,10 +1779,14 @@ Item {
                         wrapMode: Text.WordWrap
                         textFormat: Text.PlainText
                         text: modelData.v
-                        color: modelData.accent ? Model.categoryColor((root.weather && root.weather.category) || "", Color.menu.text) : Color.menu.text
+                        // An observation past its cycle is the one row here
+                        // that is not simply a fact about the weather, so it
+                        // is the one row that changes colour.
+                        color: modelData.warn ? Color.urgent
+                          : (modelData.accent ? Model.categoryColor((root.weather && root.weather.category) || "", Color.menu.text) : Color.menu.text)
                         font.family: Style.font.family
                         font.pixelSize: Style.font.bodySmall
-                        font.bold: modelData.accent === true
+                        font.bold: modelData.accent === true || modelData.warn === true
                       }
                     }
                   }
