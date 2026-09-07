@@ -20,6 +20,16 @@
 
 ### Changed
 
+- **One way of showing that the panel is waiting.** The sliding bars are gone.
+  In their place, the sequenced flashers off an approach light system - the
+  rabbit, the strip that runs toward the threshold and is the first thing you
+  see out of the murk - in the theme's accent, at a lamp and a half a second
+  rather than the real two, because this sits on a page somebody is reading.
+  Work that knows how far along it is (the cache build) fills the bar instead
+  of running it, and the lamp being worked on breathes. On the Summary page the
+  forecast band's shape is held empty above it, so the page fills in rather
+  than jumping when the weather lands.
+
 - **Traffic opens on the scope, at 10 nm.** The map was behind a keypress and
   the range started at 25, which draws the field as a smudge. It now opens on
   the picture, close enough in to see which runway everything is using, and

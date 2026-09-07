@@ -17,6 +17,72 @@ Item {
   property var shell: null
   property var manifest: null
 
+  // The sequenced flashers on an approach light system - "the rabbit", the
+  // strip of lights that runs toward the threshold twice a second and is the
+  // first thing you see out of the murk on an ILS. Here it means the panel is
+  // waiting on somebody else's server: something is on the way, and the way
+  // in is lit.
+  //
+  // Calm on purpose - a second and a half a run, not the real two a second -
+  // because this sits on a page somebody is reading rather than flying.
+  // Determinate work sets `progress` (0..1) and the bar fills instead of
+  // running: same lights, and the one being worked on breathes, so a step that
+  // takes seconds still looks alive.
+  component ApproachLights: Row {
+    id: lights
+    property color tint: Color.accent
+    property int lamps: 7
+    property int cycle: 1500
+    property bool running: true
+    property real progress: -1
+    // How bright an unlit lamp is. Higher where the bar stands in for a rule
+    // that would otherwise be solid, so the line keeps its weight.
+    property real dim: 0.18
+    property real phase: 0
+
+    spacing: Style.space(3)
+    opacity: running ? 1 : 0
+    Behavior on opacity { NumberAnimation { duration: 220 } }
+
+    NumberAnimation on phase {
+      running: lights.running
+      loops: Animation.Infinite
+      from: 0
+      to: 1
+      duration: lights.cycle
+    }
+
+    Repeater {
+      model: lights.lamps
+      delegate: Rectangle {
+        required property int index
+        width: Style.space(7)
+        height: Style.space(2)
+        radius: height / 2
+        color: lights.tint
+        // One bright lamp with a short tail behind it, running the length of
+        // the bar and out past the end, the way the real ones do. The unlit
+        // lamps stay faintly visible: an approach light bar is still a bar
+        // between flashes.
+        opacity: {
+          if (lights.progress >= 0) {
+            var lit = lights.progress * lights.lamps
+            if (index + 1 <= lit) return 1
+            if (index < lit + 1) {
+              var breathe = 0.4 + 0.3 * Math.abs(Math.sin(lights.phase * Math.PI))
+              return Math.max(lights.dim, Math.max(lit - index, breathe))
+            }
+            return lights.dim
+          }
+          var head = lights.phase * (lights.lamps + 3) - 1.5
+          var behind = head - index
+          if (behind < 0 || behind > 2.2) return lights.dim
+          return Math.max(lights.dim, 1 - behind / 2.2)
+        }
+      }
+    }
+  }
+
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "")
   readonly property string engine: pluginDir + "scripts/apt.py"
 
@@ -47,6 +113,14 @@ Item {
     else if (loadingIdent === "") { busyDelay.stop(); showBusy = false }
   }
   property bool showBusy: false
+  // The live half of a field - conditions, delays, restrictions - is still on
+  // its way. The local half is already drawn; this is what the page says about
+  // the part that is not.
+  // Guarded by `opened` as well: a fetch that outlives the panel being
+  // dismissed should not leave an animation running against a hidden window.
+  readonly property bool summaryWaiting: root.opened
+    && (!!(root.weather && root.weather.pending)
+        || (root.liveLoading && !root.weather))
   property string currentIdent: ""   // what is loaded and displayed
   property string selectedIdent: ""  // what the highlight is on, may be ahead
 
@@ -1339,15 +1413,25 @@ Item {
 
             }
 
-            Text {
+            Column {
               visible: !root.header
               width: parent.width
-              wrapMode: Text.WordWrap
-              text: root.loadingIdent !== "" ? "Loading " + root.loadingIdent + "…"
-                : "Search for an airport, or pick one from the list."
-              color: Color.muted
-              font.family: Style.font.family
-              font.pixelSize: Style.font.body
+              spacing: Style.space(8)
+
+              Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: root.loadingIdent !== "" ? "Loading " + root.loadingIdent + "…"
+                  : "Search for an airport, or pick one from the list."
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.body
+              }
+
+              ApproachLights {
+                visible: root.loadingIdent !== ""
+                running: root.loadingIdent !== "" && root.opened
+              }
             }
 
             // ---- tabs ----
@@ -1392,25 +1476,29 @@ Item {
             }
 
             Rectangle {
+              id: busyRule
               visible: !!root.header
               width: parent.width
               height: 1
-              color: Color.menu.border
+              // The rule under the tabs *becomes* the light bar while the panel
+              // is waiting: a grey line under green lamps reads as neither, and
+              // the page has only one horizontal line to spare here.
+              color: root.loadingIdent !== "" ? "transparent" : Color.menu.border
+              Behavior on color { ColorAnimation { duration: 200 } }
 
-              Rectangle {
-                height: 1
-                width: parent.width * 0.35
-                color: Color.accent
-                opacity: root.showBusy ? 0.9 : 0
-                Behavior on opacity { NumberAnimation { duration: 160 } }
-                SequentialAnimation on x {
-                  running: root.showBusy
-                  loops: Animation.Infinite
-                  NumberAnimation { from: 0; to: parent.width * 0.65; duration: 700
-                                    easing.type: Easing.InOutQuad }
-                  NumberAnimation { from: parent.width * 0.65; to: 0; duration: 700
-                                    easing.type: Easing.InOutQuad }
-                }
+              // The same lights as everywhere else, run the width of the page:
+              // whatever the panel is waiting on, it says so the same way.
+              ApproachLights {
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.horizontalCenter: parent.horizontalCenter
+                lamps: Math.max(6, Math.floor(busyRule.width / Style.space(11)))
+                cycle: 1900
+                dim: 0.32
+                // Only while the airport record itself is on its way. The live
+                // half - conditions, delays, restrictions - is reported by the
+                // page waiting on it, and two bars running at once read as a
+                // busy panel rather than as one thing being fetched.
+                running: root.loadingIdent !== "" && root.opened
               }
             }
 
@@ -1482,8 +1570,49 @@ Item {
                   // the colours are about.
                   PanelSectionHeader {
                     visible: Model.outlookSegments(root.outlook).length > 0
+                      || root.summaryWaiting
                     text: "WEATHER"
                     foreground: Color.menu.text
+                  }
+
+                  // What waiting looks like. The band below is the shape the
+                  // forecast will take, held empty so the page does not jump
+                  // when it lands, and the lights say the wait is a fetch
+                  // rather than a hang.
+                  Column {
+                    visible: root.summaryWaiting
+                    width: parent.width
+                    spacing: Style.space(6)
+
+                    Rectangle {
+                      width: parent.width
+                      height: Style.space(8)
+                      radius: Style.space(2)
+                      color: Color.menu.border
+                      opacity: 0.55
+                    }
+
+                    Row {
+                      spacing: Style.space(9)
+                      ApproachLights {
+                        anchors.verticalCenter: parent.verticalCenter
+                        running: root.summaryWaiting
+                      }
+                      Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        textFormat: Text.PlainText
+                        text: "Requesting conditions, delays and restrictions…"
+                        color: Color.muted
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                      }
+                    }
+                  }
+
+                  Item {
+                    width: 1
+                    height: Style.space(4)
+                    visible: root.summaryWaiting
                   }
 
                   // ---- forecast at a glance ----
@@ -1627,23 +1756,8 @@ Item {
                   PanelSectionHeader {
                     visible: !!(root.status && root.status.available)
                       || !!Model.tfrNote(root.tfr, root.header ? root.header.us : true)
-                      || !!(root.weather && root.weather.pending)
                     text: "ADVISORIES"
                     foreground: Color.menu.text
-                  }
-
-                  // The delay and TFR lines below arrive with the live fetch.
-                  // Without this the bottom of the page is simply blank and
-                  // then is not, with nothing to say which it was.
-                  Text {
-                    visible: !!(root.weather && root.weather.pending)
-                    width: parent.width
-                    textFormat: Text.PlainText
-                    text: "Checking conditions, delays and TFRs…"
-                    color: Color.muted
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                    font.italic: true
                   }
 
                   // ---- what the FAA is reporting right now ----
@@ -1839,14 +1953,22 @@ Item {
                     font.pixelSize: Style.font.body
                   }
 
-                  Text {
+                  Row {
                     visible: !!(root.weather && root.weather.pending)
                     width: parent.width
-                    textFormat: Text.PlainText
-                    text: "Fetching current conditions…"
-                    color: Color.muted
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.body
+                    spacing: Style.space(9)
+                    ApproachLights {
+                      anchors.verticalCenter: parent.verticalCenter
+                      running: parent.visible && root.opened
+                    }
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      textFormat: Text.PlainText
+                      text: "Fetching current conditions…"
+                      color: Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.body
+                    }
                   }
 
                   Text {
@@ -2222,6 +2344,9 @@ Item {
 
                   Item { width: 1; height: Style.space(4) }
 
+                  // No lights here. The scope is about to fill this space and
+                  // a bar of them above it fought with the picture for a
+                  // second and a half; one quiet word is enough.
                   Text {
                     visible: root.trafficLoading && !root.traffic
                     text: "Listening…"
@@ -2630,24 +2755,17 @@ Item {
                       font.pixelSize: Style.font.bodySmall
                     }
 
-                    Rectangle {
+                    Item {
+                      id: amenitiesWait
                       width: parent.width
-                      height: 1
-                      color: Color.menu.border
+                      height: Style.space(6)
 
-                      Rectangle {
-                        height: 1
-                        width: parent.width * 0.35
-                        color: Color.accent
-                        opacity: 0.9
-                        SequentialAnimation on x {
-                          running: root.amenitiesLoading
-                          loops: Animation.Infinite
-                          NumberAnimation { from: 0; to: parent.width * 0.65; duration: 700
-                                            easing.type: Easing.InOutQuad }
-                          NumberAnimation { from: parent.width * 0.65; to: 0; duration: 700
-                                            easing.type: Easing.InOutQuad }
-                        }
+                      ApproachLights {
+                        anchors.verticalCenter: parent.verticalCenter
+                        lamps: Math.max(6, Math.floor(amenitiesWait.width
+                                                      / Style.space(11)))
+                        cycle: 1900
+                        running: root.amenitiesLoading && root.opened
                       }
                     }
                   }
@@ -3188,12 +3306,21 @@ Item {
                     text: "FBOs & FUEL"
                     foreground: Color.menu.text
                   }
-                  Text {
+                  Row {
                     visible: root.fboLoading
-                    text: "  checking AirNav…"
-                    color: Color.muted
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
+                    spacing: Style.space(9)
+                    ApproachLights {
+                      anchors.verticalCenter: parent.verticalCenter
+                      lamps: 5
+                      running: root.fboLoading && root.opened
+                    }
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: "checking AirNav…"
+                      color: Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                    }
                   }
                   Text {
                     visible: !root.fboLoading && !!root.fbo
@@ -3393,33 +3520,21 @@ Item {
             }
 
             // Determinate: the engine knows how many steps there are and says
-            // which one it is on, so there is no reason to show a guess.
-            Rectangle {
+            // which one it is on, so there is no reason to show a guess. Same
+            // lights as every other wait in the panel, filling rather than
+            // running - and the lamp being worked on breathes, because a step
+            // here can take seconds.
+            Item {
+              id: buildWait
               visible: root.buildError === ""
-              anchors.horizontalCenter: parent.horizontalCenter
               width: parent.width
-              height: Style.space(4)
-              radius: height / 2
-              color: Color.menu.border
+              height: Style.space(8)
 
-              Rectangle {
-                width: parent.width * root.buildFraction
-                height: parent.height
-                radius: parent.radius
-                color: Color.accent
-                Behavior on width {
-                  NumberAnimation { duration: 320; easing.type: Easing.OutCubic }
-                }
-                // A step can take seconds; the pulse says the wait is alive
-                // without pretending to know progress within it.
-                SequentialAnimation on opacity {
-                  running: root.cacheBuilding
-                  loops: Animation.Infinite
-                  NumberAnimation { from: 1.0; to: 0.55; duration: 750
-                                    easing.type: Easing.InOutQuad }
-                  NumberAnimation { from: 0.55; to: 1.0; duration: 750
-                                    easing.type: Easing.InOutQuad }
-                }
+              ApproachLights {
+                anchors.centerIn: parent
+                lamps: Math.max(8, Math.floor(buildWait.width / Style.space(13)))
+                progress: root.buildFraction
+                running: root.cacheBuilding
               }
             }
 
