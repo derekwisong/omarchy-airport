@@ -49,6 +49,7 @@ conditions and the links out — stays put on every page.
 | **Weather** | Category, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, how old the observation is, a forecast timeline, raw METAR and TAF |
 | **Traffic** | What ADS-B hears nearby right now — arriving, departing, on the ground, passing over — as a plan-view scope centred on the field, or as a table, at 5, 10, 25, 50 or 100 nm, over the NWS reflectivity mosaic |
 | **Amenities** | Food, shops and lounges by concourse, filterable, each linking to Google Maps |
+| **Ground** | How you leave: rail with the lines that call and where they run, the airport's own people mover stop by stop, buses, taxi ranks, car rental, ferries and bike share — each with the walk from the terminal |
 | **Runways** | Which runway the wind favours, then every runway per end: head and crosswind components, lengths, surface, lighting, alignment, ILS, VGSI, displaced thresholds, LDA, obstructions, pattern altitude |
 | **Procedures** | Approaches by runway, SIDs, STARs, ODPs, minimums, hot spots |
 | **Frequencies** | The ones you'd tune, with tower hours; approach and departure filed separately |
@@ -102,6 +103,7 @@ python3 $apt runways KPOU --svg     python3 $apt status DCA
 python3 $apt procedures KATL        python3 $apt wx KPOU
 python3 $apt amenities ATL          python3 $apt fbo KPOU
 python3 $apt traffic KATL           python3 $apt traffic KPOU --radius 40
+python3 $apt ground KATL
 python3 $apt radar KATL --range 25
 python3 $apt nearby KPOU --radius 50 --fuel
 python3 $apt tfr KEWR --radius 50
@@ -115,6 +117,9 @@ Notes are markdown in `~/.local/share/airport-info/notes/<IDENT>.md`. Recents li
 
 - **No NOTAMs.** No key-free source exists, so it does not have them and does not link to a
   search that would imply it had checked.
+- **The ways out are only what OpenStreetMap has mapped.** Rail, an airport's own people
+  mover and car rental are mapped well at large fields; taxi ranks patchily; small fields
+  have nothing at all. An empty Ground page means the map is empty, not the airport.
 - **No ratings.** OpenStreetMap has no rating field. Names link to Google Maps, where they are.
 - **TFRs are located, but against the field, not your route.** Every active TFR is placed and
   the ones within 50 nm are listed nearest first, each linked to its FAA page. A restriction

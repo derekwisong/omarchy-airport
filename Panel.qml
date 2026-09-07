@@ -55,6 +55,13 @@ Item {
   property bool fboLoading: false
   property var amenities: null
   property bool amenitiesLoading: false
+  // The ways out. Shaped by the engine from the same OpenStreetMap payload the
+  // amenities come from, so this costs a process and no network once that has
+  // been fetched - and the rules for what counts as a way out live in one
+  // place rather than in two languages.
+  property var transport: null
+  property bool transportLoading: false
+  property string transportIdent: ""
   // Seconds spent on the current Overpass fetch. The mirrors are volunteer
   // infrastructure and a busy one queues rather than refuses, so this wait is
   // measured in tens of seconds often enough that a static line of grey text
@@ -337,10 +344,14 @@ Item {
     if (radarProcess.running) radarProcess.running = false
     root.fboLoading = false
     root.amenitiesLoading = false
+    root.transportLoading = false
     root.trafficLoading = false
     root.radarLoading = false
     root.fboIdent = ""
     root.amenitiesIdent = ""
+    root.transport = null
+    root.transportIdent = ""
+    root.openSiteWhenKnown = false
     root.trafficIdent = ""
     root.trafficRadius = 0
     root.radar = null
@@ -371,7 +382,8 @@ Item {
         if (root.selectedIdent === root.requestedIdent)
           root.selectedIdent = parsed.header.ident
         loadLive(parsed.header.ident)
-        if (root.tab === root.tabAmenities || root.tab === root.tabGround)
+        if (root.tab === root.tabTransport) ensureTransport()
+        if (root.tab === root.tabAmenities || root.tab === root.tabServices)
           ensureGroundData()
         if (root.tab === root.tabTraffic) ensureTraffic(false)
       }
@@ -447,6 +459,17 @@ Item {
     radarProcess.command = ["python3", root.engine, "radar", root.currentIdent,
                             "--range", String(root.trafficRange), "--json"]
     radarProcess.running = true
+  }
+
+  function ensureTransport() {
+    if (!root.currentIdent) return
+    if (root.transportLoading) return
+    if (root.transport && root.transportIdent === root.currentIdent) return
+    root.transportLoading = true
+    root.transportIdent = root.currentIdent
+    transportProcess.command = ["python3", root.engine, "ground",
+                                root.currentIdent, "--json"]
+    transportProcess.running = true
   }
 
   function moveSelection(delta) {
@@ -650,7 +673,8 @@ Item {
 
   onQueryChanged: searchDebounce.restart()
   onTabChanged: {
-    if (tab === tabAmenities || tab === tabGround) ensureGroundData()
+    if (tab === tabAmenities || tab === tabServices) ensureGroundData()
+    if (tab === tabTransport) ensureTransport()
     if (tab === tabTraffic) { ensureTraffic(false); ensureRadar(false) }
   }
 
@@ -715,11 +739,19 @@ Item {
   }
 
   readonly property var tabNames: ["Summary", "Weather", "Traffic", "Amenities",
-                                   "Runways", "Procedures", "Frequencies",
-                                   "Services", "Notes"]
+                                   "Ground", "Runways", "Procedures",
+                                   "Frequencies", "Services", "Notes"]
   readonly property int tabTraffic: 2
   readonly property int tabAmenities: 3
-  readonly property int tabGround: 7
+  // The ways out of the terminal. Next to Amenities because it is the same
+  // question asked one step later - you have landed, now what - and well away
+  // from Services, which is ground handling for the aircraft, not for you.
+  // The ways out of the terminal - "Ground transportation", which is what the
+  // signage says and what a traveller is looking for.
+  readonly property int tabTransport: 4
+  // FBOs, fuel and handling: the ground half of the *aircraft's* visit, which
+  // is the Services page and is a different question entirely.
+  readonly property int tabServices: 8
   readonly property var weather: airportData ? airportData.weather : null
   readonly property var summary: airportData ? airportData.summary : null
   readonly property var runwayData: airportData ? airportData.runways : null
@@ -807,6 +839,18 @@ Item {
       }
     }
     onExited: root.radarLoading = false
+  }
+  Process {
+    id: transportProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (root.transportIdent !== root.currentIdent) return
+        try { root.transport = JSON.parse(String(text || "{}")) }
+        catch (e) { root.transport = null }
+      }
+    }
+    onExited: root.transportLoading = false
   }
   Process { id: pinProcess }
   Process {
@@ -2394,6 +2438,169 @@ Item {
                   Item { width: 1; height: Style.space(10) }
                 }
 
+                // ============ 4 TRANSPORT ============
+                // How you leave. Everything here is OpenStreetMap, which maps
+                // an airport's own shuttle and the city's railway well, taxi
+                // ranks patchily, and rideshare pickup points not at all - so
+                // what is absent from this page is absent from the map, and
+                // the page says nothing about it either way.
+                Column {
+                  visible: root.tab === 4
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  Row {
+                    visible: root.transportLoading
+                    spacing: Style.space(9)
+                    ApproachLights {
+                      anchors.verticalCenter: parent.verticalCenter
+                      running: root.transportLoading && root.opened
+                    }
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: "reading OpenStreetMap…"
+                      color: Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                    }
+                  }
+
+                  Repeater {
+                    model: Model.transportGroups(root.transport)
+                    delegate: Column {
+                      required property var modelData
+                      width: parent.width
+                      spacing: Style.space(2)
+
+                      PanelSectionHeader {
+                        text: modelData.title.toUpperCase()
+                          + (modelData.count > 3 ? "  (" + modelData.count + ")" : "")
+                        foreground: Color.menu.text
+                      }
+
+                      Repeater {
+                        model: modelData.rows
+                        delegate: Column {
+                          required property var modelData
+                          width: parent.width
+                          spacing: 0
+
+                          Row {
+                            width: parent.width
+                            spacing: Style.space(8)
+
+                            Text {
+                              width: Style.space(172)
+                              elide: Text.ElideRight
+                              textFormat: Text.PlainText
+                              text: modelData.name
+                              color: Color.menu.text
+                              font.family: Style.font.family
+                              font.pixelSize: Style.font.bodySmall
+                              font.bold: true
+                            }
+                            Text {
+                              width: parent.width - Style.space(180)
+                              wrapMode: Text.WordWrap
+                              textFormat: Text.PlainText
+                              text: modelData.detail
+                              color: Color.muted
+                              font.family: Style.font.family
+                              font.pixelSize: Style.font.bodySmall
+                            }
+                          }
+
+                          // The lines that call at this station, under it: a
+                          // station is half an answer and the line it carries
+                          // is the other half.
+                          Repeater {
+                            model: modelData.lines
+                            delegate: Text {
+                              required property var modelData
+                              x: Style.space(10)
+                              width: parent.width - Style.space(10)
+                              wrapMode: Text.WordWrap
+                              textFormat: Text.PlainText
+                              text: modelData
+                              color: Color.muted
+                              font.family: Style.font.family
+                              font.pixelSize: Style.font.caption
+                            }
+                          }
+                        }
+                      }
+
+                      Item { width: 1; height: Style.space(6) }
+                    }
+                  }
+
+                  // Buses, mostly: a line whose network matches no station on
+                  // the field has nothing to hang under.
+                  Column {
+                    width: parent.width
+                    spacing: Style.space(2)
+                    visible: Model.transportLines(root.transport).length > 0
+
+                    PanelSectionHeader {
+                      text: "OTHER LINES"
+                      foreground: Color.menu.text
+                    }
+
+                    Repeater {
+                      model: Model.transportLines(root.transport)
+                      delegate: Row {
+                        required property var modelData
+                        width: parent.width
+                        spacing: Style.space(8)
+                        Text {
+                          width: Style.space(150)
+                          elide: Text.ElideRight
+                          textFormat: Text.PlainText
+                          text: modelData.name
+                          color: Color.menu.text
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.bodySmall
+                        }
+                        Text {
+                          width: parent.width - Style.space(158)
+                          wrapMode: Text.WordWrap
+                          textFormat: Text.PlainText
+                          text: modelData.detail
+                          color: Color.muted
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.bodySmall
+                        }
+                      }
+                    }
+                  }
+
+                  Text {
+                    visible: !!text
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.PlainText
+                    text: Model.transportNote(root.transport, root.transportLoading)
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  Item { width: 1; height: Style.space(6) }
+
+                  Text {
+                    visible: !!(root.transport && root.transport.attribution)
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.PlainText
+                    text: "© " + ((root.transport && root.transport.attribution) || "")
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Item { width: 1; height: Style.space(10) }
+                }
+
                 // ============ 3 AMENITIES ============
                 Column {
                   visible: root.tab === 3
@@ -2660,7 +2867,7 @@ Item {
 
                 // ============ 3 RUNWAYS ============
                 Column {
-                  visible: root.tab === 4
+                  visible: root.tab === 5
                   width: parent.width
                   spacing: Style.space(1)
 
@@ -2827,7 +3034,7 @@ Item {
 
                 // ============ 4 PROCEDURES ============
                 Column {
-                  visible: root.tab === 5
+                  visible: root.tab === 6
                   width: parent.width
                   spacing: Style.space(2)
 
@@ -2865,7 +3072,7 @@ Item {
 
                 // ============ 5 FREQUENCIES ============
                 Column {
-                  visible: root.tab === 6
+                  visible: root.tab === 7
                   width: parent.width
                   spacing: Style.space(1)
 
@@ -2942,7 +3149,7 @@ Item {
 
                 // ============ 6 GROUND SERVICES ============
                 Column {
-                  visible: root.tab === 7
+                  visible: root.tab === 8
                   width: parent.width
                   spacing: Style.space(4)
 
@@ -3036,7 +3243,7 @@ Item {
 
                 // ============ 7 NOTES ============
                 Column {
-                  visible: root.tab === 8
+                  visible: root.tab === 9
                   width: parent.width
                   spacing: Style.space(6)
 

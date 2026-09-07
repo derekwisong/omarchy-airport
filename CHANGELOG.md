@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- **A Ground page: how you leave the airport.** Rail, with the lines that call
+  there and where each one runs - "Airport · MARTA · Red Line, Airport ↔ North
+  Springs" - the airport's own people mover stop by stop, buses, taxi ranks,
+  car rental, ferries and bike share. Every row carries the walk from the
+  nearest terminal rather than from the middle of the field, which at Denver is
+  a mile out before you start. It reads the OpenStreetMap payload the Amenities
+  page already fetches, so the page costs no network of its own.
+
+  What it will not do is guess. Bus *stops* are never listed - a hub's bounding
+  box holds hundreds and nearly all belong to the city, not the airport - only
+  routes named for one. Staff shuttles and staging lots are filtered out. A
+  field with nothing mapped says so, in those words.
+
+
 ### Changed
 
 - **Traffic opens on the scope, at 10 nm.** The map was behind a keypress and

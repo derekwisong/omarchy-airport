@@ -148,6 +148,21 @@ if command -v node >/dev/null 2>&1; then
   fi
 fi
 
+# Ways out of an airport: which kind a mapped object is, which line it is, and
+# how far from the terminal. Offline, on synthetic objects.
+if python3 tests/transport.py >/dev/null 2>&1; then
+  echo "ok   ground transport rules"; pass=$((pass+1))
+else
+  echo "FAIL ground transport rules"; python3 tests/transport.py; fail=$((fail+1))
+fi
+
+# Present weather: the coded half of a METAR, offline.
+if python3 tests/wx.py >/dev/null 2>&1; then
+  echo "ok   present weather decoding"; pass=$((pass+1))
+else
+  echo "FAIL present weather decoding"; python3 tests/wx.py; fail=$((fail+1))
+fi
+
 # Traffic phase and local time, likewise offline.
 if python3 tests/traffic.py >/dev/null 2>&1; then
   echo "ok   traffic phase and clock"; pass=$((pass+1))

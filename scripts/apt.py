@@ -109,6 +109,8 @@ SUNRISE_URL = "https://api.sunrise-sunset.org/json"
 # NASR subscriptions step 28 days from this verified effective date.
 NASR_ANCHOR = date(2026, 9, 3)
 OSM_TTL_DAYS = 7
+# Bumped when the shape of a cached OSM payload changes.
+OSM_PAYLOAD_VERSION = 4
 # First look at each Overpass mirror. A busy mirror does not refuse the
 # request, it queues it, and the main instance queues far more often than the
 # community ones - so give every mirror a short look before any of them gets
@@ -2332,6 +2334,15 @@ POI_FILTER = (
     'lounge|nursery|clinic|doctors)$"]'
 )
 
+# The ways out. Bus *stops* are deliberately not here: the bbox of an urban
+# field holds hundreds of them and nearly all belong to the city around it, not
+# to the airport. Named routes carry the useful half of that - where the bus
+# goes - and are asked for separately.
+TRANSPORT_FILTER = (
+    '["amenity"~"^(taxi|bus_station|ferry_terminal|car_sharing|'
+    'bicycle_rental)$"]'
+)
+
 LOUNGE_BRANDS = re.compile(
     r"sky\s*club|skyclub|admirals?\s*club|united\s*club|polaris|centurion|"
     r"escape\s*lounge|priority\s*pass|amex|american\s*express|chase\s*sapphire|"
@@ -2369,6 +2380,45 @@ def overpass_query(query, timeout=90):
     raise RuntimeError("all Overpass mirrors failed (last: %s)" % last)
 
 
+def route_box(bbox, terminals, pad=0.014):
+    """The terminals and about a mile around them, clipped to the field's box.
+
+    Falls back to the middle of the field where no terminal is mapped, which
+    is the only thing left to aim at."""
+    lats = [p[1] for t in (terminals or []) for p in t.get("ring", [])]
+    lons = [p[0] for t in (terminals or []) for p in t.get("ring", [])]
+    if not lats:
+        lat, lon = (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+        lats, lons = [lat], [lon]
+    return (min(lats) - pad, min(lons) - pad * 1.3,
+            max(lats) + pad, max(lons) + pad * 1.3)
+
+
+def q_transport_routes(bbox):
+    """The lines that call at this field, not the stops they call at.
+
+    Rail routes in the box are few and all of them matter. Bus routes are the
+    opposite - a city's whole network crosses the box - so only the ones named
+    for an airport are asked for, which is the same filter a passenger applies
+    when reading a departures board.
+
+    The box is the terminals and a mile around them rather than the whole
+    field: a relation comes back when any part of it is inside, so the terminal
+    area catches every line that serves passengers, and asking over the whole
+    of Atlanta's aerodrome polygon times out where this does not. The middle of
+    the field is not good enough - Dallas and Minneapolis both returned nothing
+    from a box centred there, and their city railways went unseen."""
+    s_, w_, n_, e_ = bbox
+    box = f"{s_:.6f},{w_:.6f},{n_:.6f},{e_:.6f}"
+    return f"""[out:json][timeout:60];
+(
+  relation["route"~"^(train|subway|light_rail|monorail|tram)$"]({box});
+  relation["route"="bus"]["name"~"[Aa]irport|AIRPORT"]({box});
+);
+out tags;
+"""
+
+
 def q_aerodrome(lat, lon, radius=9000):
     """Outline of the aerodrome(s) near a point. Small, fast, works on every mirror."""
     return f"""[out:json][timeout:80];
@@ -2392,6 +2442,11 @@ def q_pois(bbox):
   nwr{POI_FILTER}({box});
   nwr["shop"]({box});
   nwr["aeroway"="lounge"]({box});
+  nwr{TRANSPORT_FILTER}({box});
+  nwr["office"="car_rental"]({box});
+  nwr["aeroway"="gate"]({box});
+  nwr["railway"~"^(station|halt|subway_entrance)$"]({box});
+  nwr["amenity"="parking"]["name"~"[Rr]ental"]({box});
 )->.pois;
 .pois out tags center;
 (
@@ -2451,6 +2506,652 @@ def classify(tags):
     return "service"
 
 
+# Ways out of an airport, in the order somebody standing in the terminal with a
+# bag would ask for them. The kinds are what OpenStreetMap actually carries;
+# what it does not carry is said out loud rather than left to look absent -
+# rideshare pickup points, above all, which are essentially unmapped.
+# How far off the field a station can be and still be the station you want.
+# BOS's Blue Line stop and O'Hare's Metra platform are both across a road from
+# the terminal and outside the aerodrome polygon. Measured from the middle of
+# the field, which at a big one is a mile from the terminal before you start.
+TRANSPORT_REACH_M = 3500
+
+TRANSPORT_GROUPS = [
+    ("rail", "Rail"),
+    ("people_mover", "Between terminals"),
+    ("bus", "Bus"),
+    ("taxi", "Taxi"),
+    ("car_rental", "Car rental"),
+    ("ferry", "Ferry"),
+    ("bike", "Bikes and car share"),
+]
+
+# Networks whose name says the line is the airport's own shuttle rather than a
+# way into town. Beyond these the test is structural, not lexical: a station
+# that no route relation in the box leaves the field with is a people mover.
+PEOPLE_MOVER_HINT = re.compile(
+    r"\bair\s*train\b|airtrain|sky\s*train|plane\s*train|people\s*mover|"
+    r"\bAPM\b|\bATS\b|automated\s+guideway|automated\s+transit|shuttle|"
+    r"inter\s*terminal|terminal\s+link|gate\s*link",
+    re.I)
+
+
+# A stop on the airport's own shuttle is usually named for what it serves
+# rather than for a place: "A Gates", "Concourse B", "Terminal 4", "Jeppesen
+# Terminal". A city station at the same field is named for the field.
+CONCOURSE_STOP = re.compile(
+    r"\b(gates?|concourse|terminal|midfield|satellite)\b|^[A-F]$", re.I)
+
+# What a consolidated rental site is called: a centre, a facility, or - at a
+# small field - simply the lot the cars are parked in. The place, never the
+# company: "Dollar Car Rental" and "Thrifty car rentals" are brands with the
+# words in them, and announcing either as the rental centre is a lie about the
+# airport told with the map's words.
+RENTAL_CENTRE = re.compile(
+    r"(?:rental[ -]car|car[ -]rental)s?[ -]"
+    r"(?:cent(?:er|re)|facilit|lot|garage|plaza|return|building|complex)"
+    r"|consolidated[ -](?:rental|rent-a-car)|\bconrac\b", re.I)
+
+# Staff shuttles and staging lots are mapped and are not ways out for you.
+NOT_FOR_PASSENGERS = re.compile(
+    r"employee|staff|crew|staging|cell\s*phone|hold(ing)?\s*lot|livery hold", re.I)
+
+
+def _transport_kind(poi, context=None):
+    """Which way out this object is, or "" if it is not one.
+
+    Read from what was stored rather than at fetch time, so the rules can be
+    argued with without re-asking Overpass for a field it already has. The
+    context carries what the route relations say about the networks here."""
+    amenity = poi.get("amenity", "")
+    railway = poi.get("railway", "")
+    name = poi.get("name", "")
+    if NOT_FOR_PASSENGERS.search(name):
+        return ""
+    if amenity == "taxi":
+        return "taxi"
+    # amenity=car_rental is the tag the wiki asks for; shop= and office= are
+    # what people actually use about a third of the time, and at a field like
+    # Tallahassee the rental cars are a *parking area* named for them.
+    if (amenity == "car_rental" or poi.get("shop") == "car_rental"
+            or poi.get("office") == "car_rental"
+            or (amenity == "parking" and RENTAL_CENTRE.search(name))):
+        return "car_rental"
+    if amenity == "ferry_terminal":
+        return "ferry"
+    if amenity in ("bicycle_rental", "car_sharing"):
+        return "bike"
+    if amenity == "bus_station":
+        return "bus"
+    # An entrance is a door to a station, not a station: Boston maps "Exit 1"
+    # and "Exit 2" beside Airport station, and two doors are not two ways out.
+    if railway in ("station", "halt"):
+        return _rail_kind(poi, context or {})
+    return ""
+
+
+def tag_list(value):
+    """A semicolon-separated tag value, read out as English.
+
+    OpenStreetMap packs several values into one tag with semicolons, so BWI's
+    station is tagged network=Amtrak;MARC - two railways calling at one
+    platform. That is punctuation for a database, not for a page."""
+    parts = [part.strip() for part in str(value or "").split(";") if part.strip()]
+    if len(parts) < 2:
+        return parts[0] if parts else ""
+    return "%s and %s" % (", ".join(parts[:-1]), parts[-1])
+
+
+def _network_in(network, names):
+    """Is this station's network one of these, allowing for loose spelling?
+
+    Orlando tags its stations "Orlando International Airport" and its routes
+    "Orlando International Airport People Movers"; they are one system."""
+    if not network or not names:
+        return False
+    lowered = network.lower().strip()
+    for other in names:
+        low = other.lower().strip()
+        if lowered == low or lowered in low or low in lowered:
+            return True
+    return False
+
+
+def _rail_kind(poi, context):
+    """Rail at an airport is one of two entirely different things.
+
+    A people mover goes round the airport; a railway goes somewhere. Telling
+    them apart by the name of the stop does not work - DART calls its station
+    "DFW Airport Terminal A" and Metro Transit calls its "Terminal 1", and
+    both of those are the city's railway, not the airport's shuttle. What
+    actually separates them is where the line goes, which the route relations
+    say: a network running a service that ends somewhere other than this
+    airport is the city's."""
+    station = poi.get("station", "")
+    network = poi.get("network", "")
+    name = poi.get("name", "")
+    if station == "subway":
+        return "rail"                     # a subway is never a people mover
+
+    # Named like the airport's own train, wherever its rails happen to run:
+    # ATL's SkyTrain station is outside the fence and is still ATL's.
+    if PEOPLE_MOVER_HINT.search(network) or PEOPLE_MOVER_HINT.search(name):
+        return "people_mover"
+    if _network_in(network, context.get("own_networks")):
+        return "people_mover"             # its services never leave this field
+    if _network_in(network, context.get("city_networks")):
+        return "rail"                     # it runs a service that leaves here
+    # Nothing else to go on. A stop belonging to no network at all, named for a
+    # concourse, is the airport's own wherever it sits - nobody else names a
+    # station "Terminal 1" and leaves it off every route. On the field, having
+    # no network is enough on its own.
+    if not network and CONCOURSE_STOP.search(name):
+        return "people_mover"
+    if poi.get("on_field") and not network:
+        return "people_mover"
+    return "rail"
+
+
+def _with_distance(poi, marks, centre):
+    """How far this object is from the terminal a passenger stands in.
+
+    Measured before anything is decided, because both what to keep and what to
+    print depend on it."""
+    if poi.get("lat") is None:
+        return poi
+    row = dict(poi)
+    if marks:
+        near = min(marks, key=lambda m: haversine_nm(m[1], m[2],
+                                                     poi["lat"], poi["lon"]))
+        row["distance_m"] = int(round(
+            haversine_nm(near[1], near[2], poi["lat"], poi["lon"]) * 1852.0))
+        row["from_terminal"] = near[0]
+    elif centre:
+        row["distance_m"] = int(round(
+            haversine_nm(centre[0], centre[1], poi["lat"], poi["lon"]) * 1852.0))
+    return row
+
+
+def _terminal_centres(terminals):
+    """One point per terminal polygon, for measuring against."""
+    out = []
+    for term in terminals or []:
+        ring = term.get("ring") or []
+        if not ring:
+            continue
+        out.append((term.get("name", ""),
+                    sum(p[1] for p in ring) / len(ring),
+                    sum(p[0] for p in ring) / len(ring)))
+    return out
+
+
+def network_context(routes, rec=None):
+    """Which networks here run the airport's trains, and which run the city's.
+
+    A route that ends somewhere other than this airport belongs to the city,
+    however airport-shaped its stations are named. A route whose every end is
+    this airport - or whose network is named for it - is the airport's own."""
+    ident = ((rec["id"] or rec["icao"] or "") if rec is not None else "").upper()
+    own_words = set()
+    if rec is not None:
+        own_words = {w.upper() for w in re.split(r"\W+", "%s %s %s" % (
+            rec["name"] or "", rec["id"] or "", rec["icao"] or "")) if len(w) > 2}
+    own_words.discard("INTERNATIONAL")
+    own_words.discard("AIRPORT")
+    own, city, seen_network = set(), set(), set()
+
+    def is_here(place):
+        """Is this end of the line a part of this airport?
+
+        Airport words, or the airport's own code - and deliberately not the
+        words in its name. Dallas/Fort Worth is named for two cities, so a
+        train ending at "Fort Worth T&P" looked like it never left the
+        airport, and TEXRail was filed as an airport shuttle."""
+        text = place.upper()
+        if any(word in text for word in ("AIRPORT", "TERMINAL", "CONCOURSE",
+                                         "AIRSIDE", "LANDSIDE", "GATES",
+                                         "SATELLITE", "BAGGAGE", "RENTAL CAR",
+                                         "MULTI-MODAL", "MULTIMODAL",
+                                         "INTERMODAL")):
+            return True
+        return bool(ident and re.search(r"\b%s\b" % re.escape(ident), text))
+
+    for row in routes or []:
+        network = row.get("network", "")
+        if not network:
+            continue
+        # Named like a people mover, and that is the end of it: ATL's SkyTrain
+        # runs from the airport to the rental centre, which is one end of the
+        # line that is not the airport, and it is still ATL's own train.
+        seen_network.add(network)
+        if PEOPLE_MOVER_HINT.search("%s %s" % (row.get("name", ""), network)):
+            own.add(network)
+            continue
+        ends = [e.strip() for e in (row.get("between") or "").split("→") if e.strip()]
+        if not ends:
+            # No endpoints mapped: fall back to the name, which usually reads
+            # "Agency Line: Somewhere => Somewhere Else".
+            ends = [e.strip() for e in re.split(r"=>|→|↔",
+                                                row.get("name", "")) if e.strip()]
+            ends = ends[1:]           # the first piece is the line's own name
+        if any(not is_here(end) for end in ends):
+            # Goes somewhere that is not this airport: the city's railway. This
+            # is tested before the network's *name* is looked at, because an
+            # airport carries its city's name and so does the city's transit
+            # agency - "Baltimore Light RailLink" at "Baltimore/Washington
+            # Intl" is not the airport's shuttle.
+            city.add(network)
+        elif ends and own_words and any(word in network.upper()
+                                        for word in own_words):
+            own.add(network)
+    # A network with services here, not one of which ends anywhere else, is the
+    # airport's own - Seattle's SEA Underground calls its lines "Blue" and
+    # "Green" and maps no endpoints at all, and it is still the airport's train.
+    own |= {net for net in seen_network if net not in city}
+    # A people-mover name beats a stray endpoint: one Orlando relation runs to
+    # a bus station and the rest are Gate Links, and the network is still the
+    # airport's own train.
+    return {"own_networks": own, "city_networks": city - own}
+
+
+# How far from a terminal still counts as "at the airport" for something you
+# walk to. Beyond it, a station has to name the airport to earn its row.
+WALKABLE_M = 1200
+
+
+def _names_field(poi, rec):
+    """True when the object's own name or network says which airport it serves."""
+    text = "%s %s" % (poi.get("name", ""), poi.get("network", ""))
+    if re.search(r"\bair ?port\b", text, re.I):
+        return True
+    if rec is None:
+        return False
+    words = [w for w in re.split(r"\W+", (rec["name"] or "")) if len(w) > 3
+             and w.upper() not in ("INTERNATIONAL", "INTL", "REGIONAL",
+                                   "MUNICIPAL", "FIELD")]
+    return any(re.search(r"\b%s\b" % re.escape(w), text, re.I) for w in words)
+
+
+# A station is at the airport, or it is the next one down the line. Names that
+# say which: "Airport Terminal B", "BWI Thurgood Marshall Airport". Names that
+# do not: "Ferndale", "BWI Business District".
+AIRPORT_STATION = re.compile(r"\bair ?ports?\b|\bterminals?\b|\bconcourse\b", re.I)
+TRANSIT_PLACE = re.compile(r"\btransit\b|\bstation\b|\bintermodal\b", re.I)
+
+
+def _serves_this_field(poi, pois, rec):
+    """True when this station is the airport's rather than merely near it.
+
+    Three ways to earn the row: be the nearest station of your network, say
+    "airport" or "terminal" in your name, or carry the airport's own code next
+    to a transit word - "LAX/Metro Transit Center" is the airport's station and
+    "BWI Business District" is a place that happens to be down the line."""
+    name = poi.get("name", "")
+    if AIRPORT_STATION.search(name):
+        return True
+    ident = (rec["id"] or rec["icao"] or "") if rec is not None else ""
+    if (ident and re.search(r"\b%s\b" % re.escape(ident), name, re.I)
+            and TRANSIT_PLACE.search(name)):
+        return True
+    # Otherwise: the nearest station of its network, and only if it is close
+    # enough to walk to. Los Angeles has two Metro stations a mile out and one
+    # airport station beyond them; the mile-out one is worth a row, the ones
+    # past it are the next stops down the line.
+    away = poi.get("distance_m")
+    if away is None:
+        return True
+    if away > WALKABLE_M:
+        return False
+    network = poi.get("network", "")
+    same = [p for p in pois
+            if p.get("network", "") == network
+            and p.get("railway") in ("station", "halt")
+            and p.get("distance_m") is not None]
+    return not same or away <= min(p["distance_m"] for p in same)
+
+
+def transport_rows(pois, routes=None, terminals=None, centre=None, rec=None,
+                   raw_routes=None):
+    """Group the ways out, nearest first, one row per name and network.
+
+    Rail rows carry the lines that call at them, matched by network, because
+    "Airport station" is only half an answer - the other half is which line it
+    is and where that line goes."""
+    routes = routes or []
+    # Distance from the terminal, not from the middle of the field: at Denver
+    # the two are a mile apart before you have gone anywhere, and "4 km" for a
+    # rental desk that is a shuttle ride away is the honest number while "on
+    # the field" is not.
+    marks = _terminal_centres(terminals)
+    # Both directions of every route, because the endpoints are what say
+    # whether a network leaves this airport.
+    context = network_context(raw_routes if raw_routes is not None else routes, rec)
+    pois = [_with_distance(p, marks, centre) for p in pois]
+    groups = {}
+    seen = set()
+    for poi in pois:
+        kind = _transport_kind(poi, context)
+        if not kind:
+            continue
+        key = (kind, (poi.get("name") or "").lower(), poi.get("network", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        # A station down the line is not this airport's station. Keep what is on
+        # the field, what is a short walk from a terminal, and what names the
+        # airport - Baltimore's "BWI Thurgood Marshall Airport" is a mile out
+        # and is the airport's; its "BWI Business District" is not.
+        # A station earns its row by serving this airport, not by being near it:
+        # Baltimore's aerodrome polygon reaches two stops down the light rail,
+        # and "Ferndale" is not a way out of BWI, while "BWI Thurgood Marshall
+        # Airport" is a mile out and is the airport's own station.
+        if kind == "rail" and not _serves_this_field(poi, pois, rec):
+            continue
+        # Everything else is something you walk to, so distance decides.
+        if kind in ("bus", "taxi"):
+            away = poi.get("distance_m")
+            if (away is not None and away > WALKABLE_M
+                    and not _names_field(poi, rec)):
+                continue
+        # An unnamed platform is not an answer; an unnamed taxi rank is.
+        if kind == "rail" and (poi.get("name") or "(unnamed)") == "(unnamed)":
+            continue
+        row = dict(poi)
+        row["transport"] = kind
+        # The raw tag stays for the matching above; the page gets the English.
+        row["network_label"] = tag_list(poi.get("network", ""))
+        if row.get("name") == "(unnamed)":
+            row["name"] = {"taxi": "Taxi rank", "car_rental": "Car rental",
+                           "bike": "Bike share"}.get(kind, row["name"])
+        if kind in ("rail", "people_mover", "bus"):
+            # Same network is not enough: RTD runs Denver's trains and its
+            # buses, and a bus route hanging off a railway platform is an
+            # answer to a question nobody asked.
+            modes = (("bus",) if kind == "bus"
+                     else ("train", "subway", "light_rail", "tram", "monorail"))
+            # Loosely, because a station tagged "Amtrak;MARC" is served by the
+            # network "Amtrak" and by the network "MARC".
+            hung = [r for r in routes
+                    if r.get("network")
+                    and _network_in(poi.get("network", ""), {r["network"]})
+                    and r.get("kind") in modes]
+            row["lines"] = hung[:LINES_PER_STATION]
+            row["more_lines"] = max(0, len(hung) - LINES_PER_STATION)
+        groups.setdefault(kind, []).append(row)
+    for kind in groups:
+        groups[kind].sort(key=lambda p: (p.get("distance_m") or 1e9,
+                                         p.get("name") or ""))
+    return groups
+
+
+
+
+
+def _shorten_system(name, rec):
+    """Drop the airport's own name from the front of its train's name.
+
+    "Denver International Airport Automated Guideway Transit System" is what
+    the map calls it and "Automated Guideway Transit System" is what it is,
+    on a page that is already about Denver. Only when what is left still reads
+    as a name: "ATL SkyTrain" must not become "SkyTrain"."""
+    own = {w for w in re.split(r"\W+", "%s %s %s" % (rec["name"] or "",
+                                                     rec["city"] or "",
+                                                     rec["id"] or "")) if w}
+    own |= {"INTERNATIONAL", "INTL", "AIRPORT", "REGIONAL", "MUNICIPAL"}
+    words = name.split()
+    cut = 0
+    while cut < len(words) and words[cut].upper().strip(".,") in own:
+        cut += 1
+    return " ".join(words[cut:]) if cut and len(words) - cut >= 3 else name
+
+
+def people_mover_systems(stops, routes, rec=None):
+    """The airport's own trains, one row each.
+
+    A traveller does not need eight rows telling them the train stops at every
+    concourse; they need to know there is one train, what it is called, and
+    what it links. The stops are kept for the row to say so in a line."""
+    named = []
+    for row in routes or []:
+        if not PEOPLE_MOVER_HINT.search(row.get("name", "") + " "
+                                        + row.get("network", "")):
+            continue
+        base = re.split(r"\s*[:(]\s*", row.get("name", ""), maxsplit=1)[0].strip()
+        ends = [e.strip() for e in row.get("between", "").split("→") if e.strip()]
+        named.append({"name": base, "network": row.get("network", ""),
+                      "ends": ends})
+
+    # The system is the network where the stops carry one - JFK's AirTrain runs
+    # three services and is one train to anybody riding it - and the route's
+    # name where they do not, which is how Atlanta's Plane Train gets its name.
+    unnamed = [row for row in named if not row["network"]]
+    # Stops with no network of their own belong to the one system named on the
+    # field, whether that name came off the route or off its network.
+    if unnamed:
+        fallback = unnamed[0]["name"]
+    elif named and len({row["network"] for row in named}) == 1:
+        fallback = named[0]["name"]
+    else:
+        fallback = "Airport people mover"
+    systems = {}
+    for stop in stops:
+        network = stop.get("network", "")
+        key = network or fallback
+        entry = systems.setdefault(key, {"name": key, "network": network,
+                                         "stops": [], "between": "",
+                                         "distance_m": stop.get("distance_m")})
+        entry["stops"].append(stop)
+        if stop.get("distance_m") is not None:
+            entry["distance_m"] = min(entry["distance_m"] or 1e9,
+                                      stop["distance_m"])
+    # A system whose stops are not mapped is still a system, and its ends are
+    # worth a row on their own - but only if it says something: a route from
+    # Howard Beach to Howard Beach is a loop nobody needs told about.
+    for row in named:
+        key = row["network"] or row["name"]
+        ends = sorted({e for e in row["ends"]}, key=str.lower)
+        if len(ends) != 2:
+            continue
+        if key in systems:
+            # A system whose stops are mapped still wants its ends: only one of
+            # ATL SkyTrain's two stations is on the map, and "Airport" alone
+            # says nothing while "Airport to the Rental Car Center" says it all.
+            systems[key]["between"] = systems[key]["between"] or " ↔ ".join(ends)
+            continue
+        systems[key] = {"name": key, "network": row["network"], "stops": [],
+                        "between": " ↔ ".join(ends), "distance_m": None}
+    for entry in systems.values():
+        entry["stops"] = _chain_stops(entry["stops"])
+    rows = [e for e in systems.values() if e["stops"] or e["between"]]
+    if rec is not None:
+        for row in rows:
+            row["name"] = _shorten_system(row["name"], rec)
+    return sorted(rows, key=lambda e: (e["distance_m"] is None,
+                                       e["distance_m"] or 0))
+
+
+# A stop named for the terminal is the end of the line a passenger starts at.
+TERMINUS_STOP = re.compile(r"terminal|baggage|main|domestic", re.I)
+
+
+def _chain_stops(stops):
+    """Stop names in the order the train calls at them.
+
+    A people mover runs in a line, and the stops are mapped as loose points, so
+    the line is rebuilt from them: start at the terminal end and walk to the
+    nearest stop not yet visited. Sorting by distance from the terminal does not
+    work - every concourse sits inside its own terminal polygon and so is zero
+    from it - and alphabetical order puts the terminal in the middle of the
+    concourses."""
+    points = [s for s in stops if s.get("lat") is not None]
+    if len(points) < 3:
+        return [s.get("name", "") for s in stops if s.get("name")]
+    start = None
+    for stop in points:
+        if TERMINUS_STOP.search(stop.get("name", "")):
+            start = stop
+            break
+    if start is None:
+        # No named terminus: begin at the stop furthest from the middle of the
+        # line, which is one of its two ends.
+        mid_lat = sum(s["lat"] for s in points) / len(points)
+        mid_lon = sum(s["lon"] for s in points) / len(points)
+        start = max(points, key=lambda s: haversine_nm(mid_lat, mid_lon,
+                                                       s["lat"], s["lon"]))
+    order, left = [start], [s for s in points if s is not start]
+    while left:
+        here = order[-1]
+        nxt = min(left, key=lambda s: haversine_nm(here["lat"], here["lon"],
+                                                   s["lat"], s["lon"]))
+        order.append(nxt)
+        left.remove(nxt)
+    return [s.get("name", "") for s in order if s.get("name")]
+
+
+def taxi_ranks(rows):
+    """Taxi pick-up points, gathered by terminal.
+
+    JFK maps ten of them, four of which are Terminal 4 Pick-Up A through D.
+    Ten rows answer a question nobody asked; which terminals have a rank, and
+    how many points are on each, is the whole of it."""
+    if len(rows) <= 3:
+        return rows
+    groups = {}
+    for row in rows:
+        where = row.get("terminal") or ""
+        if not where:
+            # "Terminal 4 Pick-Up B" names its terminal even where the polygon
+            # does not contain the point.
+            found = re.match(r"((?:terminal|concourse)\s*\w+)", row.get("name", ""),
+                             re.I)
+            where = found.group(1).title() if found else "Taxi rank"
+        entry = groups.setdefault(where, {"name": where, "count": 0,
+                                          "distance_m": row.get("distance_m"),
+                                          "transport": "taxi"})
+        entry["count"] += 1
+        if row.get("distance_m") is not None:
+            entry["distance_m"] = min(entry["distance_m"]
+                                      if entry["distance_m"] is not None else 10 ** 9,
+                                      row["distance_m"])
+    return sorted(groups.values(), key=lambda g: (g["distance_m"] is None,
+                                                  g["distance_m"] or 0))
+
+
+def dock_groups(rows):
+    """Bike and car-share docks, gathered by their network.
+
+    LaGuardia has ten Citi Bike stands; that is one line about Citi Bike, not
+    ten lines about stands."""
+    if len(rows) <= 2:
+        return rows
+    groups = {}
+    for row in rows:
+        key = row.get("network") or row.get("name") or "Bike share"
+        entry = groups.setdefault(key, {"name": key, "count": 0,
+                                        "distance_m": row.get("distance_m"),
+                                        "transport": "bike"})
+        entry["count"] += 1
+        if row.get("distance_m") is not None:
+            entry["distance_m"] = min(entry["distance_m"]
+                                      if entry["distance_m"] is not None else 10 ** 9,
+                                      row["distance_m"])
+    return sorted(groups.values(), key=lambda g: (g["distance_m"] is None,
+                                                  g["distance_m"] or 0))
+
+
+def rental_summary(desks, systems):
+    """Car rental as one answer instead of thirteen.
+
+    Every brand at a big field is its own node, all of them at the same place,
+    which is a consolidated rental centre reached by a shuttle or by the
+    airport's own train. The brands are a list; where to go is the answer."""
+    if not desks:
+        return {}
+    brands = []
+    for desk in desks:
+        name = (desk.get("brand") or desk.get("name") or "").strip()
+        if name == "(unnamed)":
+            continue          # a desk is mapped; whose it is, is not
+        if RENTAL_CENTRE.search(name):
+            continue          # the building the desks are in is not a brand
+        name = re.sub(r"\s*[-(].*$", "", name).strip()
+        if name and name.lower() not in [b.lower() for b in brands]:
+            brands.append(name)
+    far = [d["distance_m"] for d in desks if d.get("distance_m") is not None]
+    centre, via = "", ""
+    for system in systems or []:
+        for end in (system.get("between") or "").split("↔"):
+            if RENTAL_CENTRE.search(end):
+                centre, via = end.strip(), system.get("name", "")
+                break
+        if centre:
+            break
+    if not centre:
+        for desk in desks:
+            if RENTAL_CENTRE.search(desk.get("name", "")):
+                centre = desk["name"]
+                break
+    return {"count": len(desks), "brands": brands, "centre": centre, "via": via,
+            # A consolidated centre has a dozen companies in it and OpenStreetMap
+            # may have mapped one of them. Naming that one next to the centre
+            # reads as "the centre has one desk, Enterprise", which is a claim
+            # about the airport rather than about the map - so the brands are
+            # only listed when enough of them are mapped to be a list.
+            "brands_worth_listing": len(brands) >= 3,
+            "nearest_m": min(far) if far else None,
+            "furthest_m": max(far) if far else None}
+
+
+def route_lines(routes):
+    """The lines worth listing: one row per line, not one per direction.
+
+    A route mapped both ways is two relations with the same name and reversed
+    endpoints; they are one line to anybody standing on the platform. The
+    airport's own shuttle is left out - it appears as the stops it serves."""
+    out = {}
+    for row in routes or []:
+        if PEOPLE_MOVER_HINT.search(row.get("name", "")):
+            continue
+        base = re.split(r"\s*[:(]\s*", row.get("name", ""), maxsplit=1)[0].strip()
+        ends = [x.strip() for x in row.get("between", "").split("→") if x.strip()]
+        key = (base.lower(), row.get("network", ""), frozenset(e.lower() for e in ends))
+        # The two directions of one line are the same line, so the pair is
+        # written in a fixed order rather than in whichever order the first
+        # relation happened to be mapped in.
+        ends = sorted(ends, key=str.lower)
+        keep = out.get(key)
+        if keep is None:
+            out[key] = {"name": base, "network": row.get("network", ""),
+                        "operator": row.get("operator", ""),
+                        "kind": row.get("kind", ""),
+                        "between": " ↔ ".join(ends) if len(ends) == 2 else ""}
+        elif not keep["between"] and row.get("between"):
+            keep["between"] = row["between"]
+    rail_first = {"train": 0, "subway": 1, "light_rail": 2, "tram": 3,
+                  "monorail": 4, "bus": 5}
+    return sorted(out.values(),
+                  key=lambda r: (rail_first.get(r["kind"], 9), r["name"]))
+
+
+# How many lines hang under one station before the rest become a count. Four is
+# every service at almost any airport station; twenty-five is the Northeast
+# Corridor passing through Baltimore.
+LINES_PER_STATION = 4
+
+
+def _route_row(tags):
+    line = tags.get("name") or tags.get("ref") or ""
+    ends = [x for x in (tags.get("from"), tags.get("to")) if x]
+    return {"name": line,
+            "kind": tags.get("route", ""),
+            "network": tags.get("network", ""),
+            "operator": tags.get("operator", ""),
+            # Where it runs between, when the relation says. Half the value of
+            # a line is knowing it goes somewhere you want to be.
+            "between": " → ".join(ends) if len(ends) == 2 else "",
+            "colour": tags.get("colour", "")}
+
+
 def fetch_amenities(rec, refresh=False):
     """Two steps: outline the aerodrome, then read everything inside its bbox.
 
@@ -2462,8 +3163,11 @@ def fetch_amenities(rec, refresh=False):
     path = OSM_DIR / ("%s.json" % re.sub(r"[^A-Z0-9]", "_", key))
     if path.exists() and not refresh:
         age = (time.time() - path.stat().st_mtime) / 86400
-        if age < OSM_TTL_DAYS:
-            return json.loads(path.read_text())
+        cached = json.loads(path.read_text())
+        # A payload from before the ways out were collected is not wrong, it is
+        # incomplete - and silently missing half a page is worse than a refetch.
+        if age < OSM_TTL_DAYS and cached.get("version") == OSM_PAYLOAD_VERSION:
+            return cached
 
     lat, lon = rec["lat"], rec["lon"]
     if lat is None or lon is None:
@@ -2529,21 +3233,79 @@ def fetch_amenities(rec, refresh=False):
             "level": tags.get("level", ""),
             "website": tags.get("website", "") or tags.get("contact:website", ""),
             "phone": tags.get("phone", ""),
+            # Two things a traveller plans around and the map often knows:
+            # whether they can get in without stairs, and whether there is
+            # wi-fi while they wait.
+            "wheelchair": tags.get("wheelchair", ""),
+            "internet": tags.get("internet_access", ""),
             "lat": plat, "lon": plon,
             "terminal": "",
+            # The ways out carry a little more: which network, how far from the
+            # field, and whether they are on it at all - a station across the
+            # road is still the station you want, and the walk is the thing
+            # worth knowing about it.
+            "transport": kind or "",
+            "network": tags.get("network", ""),
+            "station": tags.get("station", ""),
+            "railway": tags.get("railway", ""),
+            "distance_m": int(round(away)),
+            "on_field": inside,
         })
 
-    # Smallest containing polygon wins, so a concourse beats the terminal it sits in.
+    # Smallest containing polygon wins, so a concourse beats the terminal it sits
+    # in. Sorted before the routes are asked for, because the question of which
+    # lines call here is asked around the terminals.
     terminals.sort(key=lambda t: len(t["ring"]), reverse=True)
+    for poi in pois:
+        poi["gate"] = nearest_gate(poi, gates)
     for poi in pois:
         for term in terminals:
             if point_in_ring(poi["lon"], poi["lat"], term["ring"]):
                 poi["terminal"] = term["name"]
+    # Which lines call here, asked for only when something rail-shaped was
+    # found: at a field with no station the answer is known without asking.
+    routes = []
+    if any(p["transport"] in ("rail", "people_mover", "bus") for p in pois):
+        try:
+            got = overpass_query(q_transport_routes(route_box(bbox, terminals)),
+                                 timeout=60)
+            for el in got.get("elements", []):
+                row = _route_row(el.get("tags", {}))
+                if row["name"]:
+                    routes.append(row)
+            if not routes:
+                raise RuntimeError("no routes returned")
+        except Exception:
+            # Overpass throttles this one at a big field. Lines change about
+            # once a decade, so the ones already on disk beat none at all.
+            routes = []
+            if path.exists():
+                try:
+                    routes = json.loads(path.read_text()).get("routes", [])
+                except (OSError, ValueError):
+                    routes = []
+    seen_routes = set()
+    unique = []
+    for row in sorted(routes, key=lambda r: (r["kind"] != "train", r["name"])):
+        key = (row["name"].lower(), row["network"])
+        if key in seen_routes:
+            continue
+        seen_routes.add(key)
+        unique.append(row)
+
     result = {
+        "version": OSM_PAYLOAD_VERSION,
+        "website": site.get("website", ""),
+        "wikipedia": site.get("wikipedia", ""),
+        "phone": site.get("phone", ""),
         "fetched": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "pois": pois,
         "terminals": sorted({t["name"] for t in terminals}),
+        # The outlines too, not only the names: distances on the ground are
+        # measured from the terminal a passenger is standing in.
+        "terminal_shapes": terminals,
         "aerodrome_mapped": bool(rings),
+        "routes": unique,
         "attribution": "OpenStreetMap contributors (ODbL)",
     }
     path.write_text(json.dumps(result))
@@ -3487,6 +4249,117 @@ def cmd_tfr(args):
           % (result["checked"], "; " + ", ".join(extra) if extra else ""))
     print("\nThis is a filtered view of the FAA TFR list and is NOT a substitute for an "
           "official preflight briefing. Check https://tfr.faa.gov and NOTAMs.")
+
+
+def cmd_ground(args):
+    """How to leave the airport, as OpenStreetMap has it mapped."""
+    conn = db_connect()
+    rec = need_airport(conn, args.airport)
+    data = fetch_amenities(rec, refresh=args.refresh)
+    # One row per line, then hung on the station it calls at: "Airport station,
+    # MARTA Red Line, Airport to North Springs" is one answer, not two.
+    lines = route_lines(data.get("routes", []))
+    groups = transport_rows(data.get("pois", []), lines,
+                            data.get("terminal_shapes", []),
+                            (rec["lat"], rec["lon"]), rec,
+                            data.get("routes", []))
+    # Whatever is left over - usually buses, whose network matches no station
+    # on the field - is listed on its own rather than dropped.
+    attached = {row.get("network") for rows in groups.values() for row in rows
+                if row.get("lines")}
+    lines = [line for line in lines
+             if not _network_in(line.get("network", ""), attached)]
+    # One row per train rather than one per platform, and one answer for car
+    # rental rather than one row per brand.
+    systems = people_mover_systems(groups.get("people_mover", []),
+                                   data.get("routes", []), rec)
+    groups["people_mover"] = systems
+    if groups.get("taxi"):
+        groups["taxi"] = taxi_ranks(groups["taxi"])
+    if groups.get("bike"):
+        groups["bike"] = dock_groups(groups["bike"])
+    rental = rental_summary(groups.get("car_rental", []), systems)
+    if args.json:
+        print(json.dumps({"airport": display_id(rec),
+                          "website": data.get("website", ""),
+                          "wikipedia": data.get("wikipedia", ""),
+                          "transport": groups,
+                          "rental": rental,
+                          "routes": lines,
+                          "attribution": data.get("attribution", ""),
+                          "stale": data.get("stale", False),
+                          "error": data.get("error", "")}, indent=2, default=str))
+        return
+    if data.get("error"):
+        print("Could not reach OpenStreetMap: %s" % data["error"])
+        return
+    print("%s  %s\n" % (display_id(rec), rec["name"]))
+    shown = 0
+    for key, title in TRANSPORT_GROUPS:
+        rows = groups.get(key) or []
+        if not rows:
+            continue
+        shown += 1
+        print(title.upper())
+        if key == "people_mover":
+            for row in rows:
+                # The stops, when there are enough of them to be the answer;
+                # otherwise where the line runs between.
+                stops = row.get("stops", [])
+                where = ("  ·  ".join(stops) if len(stops) >= 3
+                         else (row.get("between") or "  ·  ".join(stops)))
+                print("  %-24s %s" % (row["name"][:24], where[:70]))
+            print("")
+            continue
+        if key == "car_rental":
+            span = ""
+            if rental.get("nearest_m") is not None:
+                metres = rental["nearest_m"]
+                span = ("at the terminal" if metres < 150 else
+                        "%d m from the terminal" % metres if metres < 1000 else
+                        "%.1f km from the terminal" % (metres / 1000.0))
+            if rental.get("centre"):
+                print("  %-24s %s" % (rental["centre"][:24],
+                                      ("by " + rental["via"]) if rental.get("via")
+                                      else span))
+            if rental.get("brands_worth_listing"):
+                count = rental.get("count", 0)
+                print("  %-24s %s" % ("%d desks" % count,
+                                      "" if rental.get("centre") else span))
+                print("  " + ", ".join(rental.get("brands", [])[:14]))
+            elif not rental.get("centre"):
+                print("  %-24s %s" % (", ".join(rental.get("brands", []))[:24], span))
+            print("")
+            continue
+        for row in rows[:12]:
+            where = ""
+            if row.get("distance_m") is not None:
+                metres = row["distance_m"]
+                where = ("at the terminal" if metres < 150 else
+                         "%d m away" % metres if metres < 1000 else
+                         "%.1f km away" % (metres / 1000.0))
+            if row.get("count", 0) > 1:
+                unit = "docks" if key == "bike" else "pick-up points"
+                where = "%d %s  ·  %s" % (row["count"], unit, where)
+            bits = [b for b in (row.get("network_label") or row.get("network"),
+                                row.get("terminal"), where) if b]
+            print("  %-34s %s" % (row["name"][:34], "  ·  ".join(bits)))
+            for line in row.get("lines", []):
+                print("      %-30s %s" % (line["name"][:30], line.get("between", "")))
+            if row.get("more_lines"):
+                print("      %-30s" % ("and %d more" % row["more_lines"]))
+        if len(rows) > 12:
+            print("  ... and %d more" % (len(rows) - 12))
+        print("")
+    if lines:
+        print("OTHER LINES")
+        for row in lines[:12]:
+            bits = [b for b in (row.get("between"), row.get("network")) if b]
+            print("  %-34s %s" % (row["name"][:34], "  ·  ".join(bits)))
+        print("")
+    if not shown:
+        print("Nothing mapped. OpenStreetMap has no ways out recorded for this "
+              "field, which is not the same as there being none.")
 
 
 def cmd_amenities(args):
@@ -5238,6 +6111,12 @@ def main(argv=None):
     sp.add_argument("--refresh", action="store_true", help="ignore the cache")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_radar)
+
+    sp = sub.add_parser("ground", help="ways out: rail, bus, taxi, car rental")
+    sp.add_argument("airport")
+    sp.add_argument("--refresh", action="store_true", help="ignore the cache")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_ground)
 
     sp = sub.add_parser("amenities", help="food, shops and lounges by terminal/concourse")
     sp.add_argument("airport")

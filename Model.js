@@ -750,6 +750,144 @@ function radarNote(radar, tick) {
 }
 
 
+// ---- ways out of the terminal ---------------------------------------------
+// The engine decides what counts as a way out and what each one is; this only
+// puts the rows in the order somebody standing in the terminal with a bag
+// would ask for them, and writes the distances in words.
+var TRANSPORT_ORDER = [
+  { key: "rail",         title: "Rail" },
+  { key: "people_mover", title: "Between terminals" },
+  { key: "bus",          title: "Bus" },
+  { key: "taxi",         title: "Taxi" },
+  { key: "car_rental",   title: "Car rental" },
+  { key: "ferry",        title: "Ferry" },
+  { key: "bike",         title: "Bikes and car share" }
+]
+
+function transportGroups(payload) {
+  if (!payload || !payload.transport) return []
+  var out = []
+  for (var i = 0; i < TRANSPORT_ORDER.length; i++) {
+    var group = TRANSPORT_ORDER[i]
+    var rows = payload.transport[group.key] || []
+    if (!rows.length) continue
+    var made = []
+    if (group.key === "people_mover") {
+      // One row per train, not one per platform. Eight rows saying the train
+      // stops at every concourse is eight ways of saying one thing.
+      for (var m = 0; m < rows.length; m++) made.push(systemRow(rows[m]))
+    } else if (group.key === "car_rental") {
+      made = rentalRows(payload)
+    } else {
+      for (var j = 0; j < rows.length; j++) made.push(transportRow(rows[j]))
+    }
+    if (!made.length) continue
+    out.push({ title: group.title, count: made.length, rows: made })
+  }
+  return out
+}
+
+
+// The airport's own train: what it is called, and what it links.
+function systemRow(system) {
+  var stops = system.stops || []
+  // The stops when there are enough of them to be the answer, otherwise where
+  // the line runs between: one mapped station reads as "Airport", which says
+  // nothing, where the route says "Airport ↔ Rental Car Center".
+  return { name: system.name || "Airport people mover",
+           detail: stops.length >= 3 ? stops.join("  ·  ")
+             : (system.between || stops.join("  ·  ")),
+           lines: [] }
+}
+
+
+// Car rental as one answer. Thirteen desks at one rental centre is a place to
+// go and a list of brands, not thirteen rows with thirteen distances.
+function rentalRows(payload) {
+  var r = payload.rental || {}
+  var desks = (payload.transport || {}).car_rental || []
+  if (!desks.length) return []
+  var span = (r.nearest_m !== null && r.nearest_m !== undefined)
+    ? walkFrom({ distance_m: r.nearest_m }) : ""
+  var brands = (r.brands || []).join(", ")
+  var rows = []
+  if (r.centre)
+    rows.push({ name: r.centre, detail: r.via ? "by " + r.via : span, lines: [] })
+  // A consolidated centre holds a dozen companies and the map may have one of
+  // them. "1 desk · Enterprise" under "Rental Car Center" reads as a claim
+  // about the airport; it is a fact about the map, so it goes unsaid.
+  if (r.brands_worth_listing)
+    rows.push({ name: r.count + " desks",
+                detail: [r.centre ? "" : span, brands]
+                  .filter(function (b) { return !!b }).join("  ·  "),
+                lines: [] })
+  else if (!r.centre)
+    rows.push({ name: brands || "Car rental", detail: span, lines: [] })
+  return rows
+}
+
+
+function transportRow(row) {
+  var bits = []
+  // network_label is the same tag with its semicolons read out: OpenStreetMap
+  // writes "Amtrak;MARC" where a page should say "Amtrak and MARC".
+  if (row.network_label || row.network) bits.push(row.network_label || row.network)
+  if (row.terminal) bits.push(row.terminal)
+  bits.push(walkFrom(row))
+  // A station is half an answer; the other half is which line it is and where
+  // that line goes, which the route relations carry.
+  var lines = []
+  for (var i = 0; i < (row.lines || []).length; i++) {
+    var line = row.lines[i]
+    lines.push(line.name + (line.between ? "  ·  " + line.between : ""))
+  }
+  // A station on the Northeast Corridor has two dozen services through it and
+  // four of them is the answer; the rest are a number.
+  if (row.more_lines) lines.push("and " + row.more_lines + " more")
+  return { name: row.name || "(unnamed)",
+           detail: bits.filter(function (b) { return !!b }).join("  ·  "),
+           lines: lines }
+}
+
+
+// How far, in the terms the walk is actually thought about.
+function walkFrom(row) {
+  var m = row.distance_m
+  if (m === null || m === undefined) return ""
+  if (m < 150) return "at the terminal"
+  if (m < 1000) return m + " m from the terminal"
+  return (m / 1000).toFixed(1) + " km from the terminal"
+}
+
+
+// One row per line rather than per direction, already deduplicated by the
+// engine; this is only how it reads.
+function transportLines(payload) {
+  var rows = (payload && payload.routes) || []
+  var out = []
+  for (var i = 0; i < rows.length; i++) {
+    out.push({ name: rows[i].name,
+               detail: [rows[i].between, rows[i].network]
+                 .filter(function (b) { return !!b }).join("  ·  ") })
+  }
+  return out
+}
+
+
+// Said when the page has nothing to show, because an empty page and an
+// unmapped airport are different claims and only one of them is ours to make.
+function transportNote(payload, loading) {
+  if (loading) return ""
+  if (!payload) return ""
+  if (payload.error)
+    return "Could not reach OpenStreetMap. This says nothing about the airport - "
+      + "only that the map did not answer."
+  if (transportGroups(payload).length || transportLines(payload).length) return ""
+  return "Nothing mapped. OpenStreetMap has no ways out recorded for this field, "
+    + "which is not the same as there being none."
+}
+
+
 // ---- TFRs, by distance ----------------------------------------------------
 
 // The FAA's own list page, for everything the rows below do not carry.
