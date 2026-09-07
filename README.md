@@ -103,8 +103,8 @@ python3 $apt info KPOU              python3 $apt outlook KORD
 python3 $apt runways KPOU --svg     python3 $apt status DCA
 python3 $apt procedures KATL        python3 $apt wx KPOU
 python3 $apt amenities ATL          python3 $apt fbo KPOU
-python3 $apt traffic KATL           python3 $apt traffic KPOU --radius 40
 python3 $apt ground KATL
+python3 $apt traffic KATL           python3 $apt traffic KPOU --radius 40
 python3 $apt radar KATL --range 25
 python3 $apt nearby KPOU --radius 50 --fuel
 python3 $apt tfr KEWR --radius 50

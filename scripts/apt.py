@@ -5423,6 +5423,10 @@ def fetch_traffic(rec, radius_nm=TRAFFIC_RADIUS_NM, refresh=False):
             "type": str(ac.get("t") or "").strip(),
             "phase": phase,
             "altitude": int(alt) if alt is not None else None,
+            # The altitude set in the autopilot, which the transponder reports
+            # and nothing else on the page can tell you: where an aircraft is
+            # *going* to level off, not where it happens to be right now.
+            "selected": int(_traffic_num(ac.get("nav_altitude_mcp")) or 0) or None,
             "speed": int(_traffic_num(ac.get("gs")) or 0) or None,
             "rate": int(_traffic_num(ac.get("baro_rate")) or 0) or None,
             "distance_nm": round(dist, 1) if dist is not None else None,

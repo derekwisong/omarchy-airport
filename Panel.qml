@@ -2425,7 +2425,16 @@ Item {
                     id: scope
                     visible: root.trafficMap
                     width: parent.width
-                    height: visible ? Math.min(parent.width, Style.space(430)) : 0
+                    // Fit the circle into what is left of the page, so opening
+                    // the scope shows all of it rather than the top two thirds
+                    // and a scrollbar. `y` is where this sits in the column
+                    // above the fold, so the sum is what the viewport has left;
+                    // it does not depend on this height, so nothing loops.
+                    height: visible
+                      ? Math.max(Style.space(200),
+                                 Math.min(parent.width, Style.space(430),
+                                          bodyScroll.height - y - Style.space(6)))
+                      : 0
                     renderStrategy: Canvas.Cooperative
 
                     property var payload: root.traffic

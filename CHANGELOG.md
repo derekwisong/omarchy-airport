@@ -17,57 +17,7 @@
   routes named for one. Staff shuttles and staging lots are filtered out. A
   field with nothing mapped says so, in those words.
 
-
 ### Changed
-
-- **The gate each place is at.** "Concourse A" is a hundred metres of corridor;
-  OpenStreetMap maps the gates, and 194 of Atlanta's 210 mapped places sit
-  within ninety metres of one. Step-free access and wi-fi come along in the
-  same read, where the map says so - and where it does not, the page says
-  nothing rather than guessing.
-- **The airport's own website, on Services and on a key.** OpenStreetMap
-  carries it on the aerodrome itself and the plugin was reading only the shape
-  of that polygon. `Ctrl+O` opens it from any page - and where the ground data
-  has not been fetched yet, the key asks for it and opens the site when it
-  lands rather than doing nothing. It is the one link that answers what no data
-  set carries: today's construction, where the rideshare pickup moved to.
-
-- **Runway alignment in magnetic, as the runway is numbered.** NASR publishes
-  true bearings and the magnetic variation beside them, and the page was
-  showing the true one - which is why runway 06 read as 051°T and looked wrong
-  to anybody holding a compass. Both are shown now, magnetic first, with the
-  field's variation stated once above the table.
-- **What the FAA record has always said and the panel never showed:** the
-  sectional chart and the centre above you on Summary; airframe and engine
-  repairs, bottled and bulk oxygen, the beacon's hours and whether the wind
-  indicator is lit, on Services.
-
-- **Present weather, which the panel was dropping entirely.** A METAR codes
-  what the sky is *doing* separately from what it looks like, and the plugin
-  read the cloud layers, the temperature and the wind while saying nothing at
-  all about the thunderstorm: Miami reported `-TSRA BR` and the conditions line
-  said "Scattered clouds at 1,900 ft". It now leads with it, in words -
-  "Thunderstorm with light rain, mist" - decoded properly, so `+SHRA` is heavy
-  rain showers, `FZFG` is freezing fog, `VCTS` is a thunderstorm in the
-  vicinity and `+FC` is a tornado rather than a heavy funnel cloud.
-- **The weather reads as a filled-in form.** Fourteen label-and-value rows ran
-  down the left of the page and spent most of its width on nothing, which
-  pushed the raw observation and the forecast timeline off the bottom. The same
-  facts are cells now - label over answer - flowing across the page and
-  wrapping where they run out: four rows instead of fourteen, and the timeline
-  is above the fold. Each cell takes the width its own answer needs rather than
-  a share of a fixed grid, because a grid left a third of the page empty
-  whenever two long answers met.
-
-- **One way of showing that the panel is waiting.** The sliding bars are gone.
-  In their place, the sequenced flashers off an approach light system - the
-  rabbit, the strip that runs toward the threshold and is the first thing you
-  see out of the murk - in the theme's accent, at a lamp and a half a second
-  rather than the real two, because this sits on a page somebody is reading.
-  Work that knows how far along it is (the cache build) fills the bar instead
-  of running it, and the lamp being worked on breathes. On the Summary page the
-  forecast band's shape is held empty above it, so the page fills in rather
-  than jumping when the weather lands.
 
 - **Traffic opens on the scope, at 10 nm.** The map was behind a keypress and
   the range started at 25, which draws the field as a smudge. It now opens on
@@ -87,6 +37,55 @@
   minutes old and about a kilometre per pixel, and neither is visible in the
   picture. Outside the lower 48 there is no mosaic, so the switch is not offered
   and the page says why - an empty scope would read as clear weather.
+- **Present weather, which the panel was dropping entirely.** A METAR codes
+  what the sky is *doing* separately from what it looks like, and the plugin
+  read the cloud layers, the temperature and the wind while saying nothing at
+  all about the thunderstorm: Miami reported `-TSRA BR` and the conditions line
+  said "Scattered clouds at 1,900 ft". It now leads with it, in words -
+  "Thunderstorm with light rain, mist" - decoded properly, so `+SHRA` is heavy
+  rain showers, `FZFG` is freezing fog, `VCTS` is a thunderstorm in the
+  vicinity and `+FC` is a tornado rather than a heavy funnel cloud.
+- **Runway alignment in magnetic, as the runway is numbered.** NASR publishes
+  true bearings and the magnetic variation beside them, and the page was
+  showing the true one - which is why runway 06 read as 051°T and looked wrong
+  to anybody holding a compass. Both are shown now, magnetic first, with the
+  field's variation stated once above the table.
+- **The gate each place is at.** "Concourse A" is a hundred metres of corridor;
+  OpenStreetMap maps the gates, and 194 of Atlanta's 210 mapped places sit
+  within ninety metres of one. Step-free access and wi-fi come along in the
+  same read, where the map says so - and where it does not, the page says
+  nothing rather than guessing.
+- **What the FAA record has always said and the panel never showed:** the
+  sectional chart and the centre above you on Summary; airframe and engine
+  repairs, bottled and bulk oxygen, the beacon's hours and whether the wind
+  indicator is lit, on Services.
+- **Where an aircraft is levelling off.** The transponder reports the altitude
+  set in the autopilot, and the traffic table now reads "3,200 → 10,000 ft"
+  when that is somewhere else - a climb you can see the end of. Forty of
+  Atlanta's seventy-three aircraft were reporting it and none of it was read.
+- **The airport's own website, on Services and on a key.** OpenStreetMap
+  carries it on the aerodrome itself and the plugin was reading only the shape
+  of that polygon. `Ctrl+O` opens it from any page - and where the ground data
+  has not been fetched yet, the key asks for it and opens the site when it
+  lands rather than doing nothing. It is the one link that answers what no data
+  set carries: today's construction, where the rideshare pickup moved to.
+- **The weather reads as a filled-in form.** Fourteen label-and-value rows ran
+  down the left of the page and spent most of its width on nothing, which
+  pushed the raw observation and the forecast timeline off the bottom. The same
+  facts are cells now - label over answer - flowing across the page and
+  wrapping where they run out: four rows instead of fourteen, and the timeline
+  is above the fold. Each cell takes the width its own answer needs rather than
+  a share of a fixed grid, because a grid left a third of the page empty
+  whenever two long answers met.
+- **One way of showing that the panel is waiting.** The sliding bars are gone.
+  In their place, the sequenced flashers off an approach light system - the
+  rabbit, the strip that runs toward the threshold and is the first thing you
+  see out of the murk - in the theme's accent, at a lamp and a half a second
+  rather than the real two, because this sits on a page somebody is reading.
+  Work that knows how far along it is (the cache build) fills the bar instead
+  of running it, and the lamp being worked on breathes. On the Summary page the
+  forecast band's shape is held empty above it, so the page fills in rather
+  than jumping when the weather lands.
 - **The wind, resolved on every runway end.** The page named the favoured end
   and kept the sums to itself, so the one end you were told about was the one
   you could not check. Every end now carries its own head or tailwind and its

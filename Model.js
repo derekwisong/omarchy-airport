@@ -751,8 +751,14 @@ function trafficRow(a) {
 function trafficDetail(a) {
   var bits = []
   if (a.phase === "ground") bits.push("on the ground")
-  else if (a.altitude !== null && a.altitude !== undefined)
-    bits.push(commas(a.altitude) + " ft")
+  else if (a.altitude !== null && a.altitude !== undefined) {
+    var height = commas(a.altitude) + " ft"
+    // Where it is going to level off, when the transponder says so and it is
+    // somewhere else: "3,200 → 10,000 ft" is a climb you can see the end of.
+    if (a.selected && Math.abs(a.selected - a.altitude) >= 400)
+      height = commas(a.altitude) + " → " + commas(a.selected) + " ft"
+    bits.push(height)
+  }
   // Height, then which way, then how fast - the order you would ask them in.
   // Zero-padded to three digits, the way a heading is written and read.
   if (a.track !== null && a.track !== undefined && a.phase !== "ground")
