@@ -4309,6 +4309,180 @@ def traffic_counts(result):
 
 
 
+
+# --------------------------------------------------------------------------
+# Weather radar, as a picture to put under the scope
+#
+# The mosaic is base reflectivity: what the network of NEXRAD sites saw at the
+# lowest tilt, stitched together. Two things about it have to reach the panel
+# with the picture, because neither is visible in the pixels:
+#
+#   - it is minutes old, always, and the scan time says how many;
+#   - it covers the lower 48 and nothing else. Outside that the answer is "no
+#     coverage", which is not the same claim as "no weather", and an empty
+#     scope must never be drawn as if it were.
+#
+# Two sources, the way the timezone lookup does it: one small service should
+# not be why a panel stops drawing. The Iowa Environmental Mesonet goes first
+# and NOAA's own event-driven service second, which is the opposite of what
+# provenance would suggest and was decided by measuring rather than by taste -
+# sampled together, IEM was serving a scan 2.5 minutes old and NOAA one 12.5
+# minutes old. A cell moves five miles in ten minutes; the fresher picture
+# wins, and the panel names which one it drew.
+# --------------------------------------------------------------------------
+
+RADAR_DIR = CACHE_DIR / "radar"
+RADAR_CACHE = CACHE_DIR / "radar.json"
+RADAR_TTL = 120          # the mosaic itself only moves every few minutes
+RADAR_PX = 512
+RADAR_MAX_RANGE = 250
+
+# The CONUS mosaic, generously bounded. A field outside it gets told so.
+RADAR_BOUNDS = (23.0, -127.5, 50.5, -65.0)
+
+NOAA_RADAR = ("https://mapservices.weather.noaa.gov/eventdriven/rest/services/"
+              "radar/radar_base_reflectivity_time/ImageServer")
+IEM_RADAR = "https://mesonet.agron.iastate.edu"
+
+
+def _noaa_radar(box, px):
+    return (NOAA_RADAR + "/exportImage?bbox=%.5f,%.5f,%.5f,%.5f"
+            "&bboxSR=4326&imageSR=4326&size=%d,%d&format=png32"
+            "&transparent=true&f=image"
+            % (box[1], box[0], box[3], box[2], px, px))
+
+
+def _noaa_radar_time():
+    """The end of the service's time extent: the scan the image came from."""
+    meta = Http.json(NOAA_RADAR + "?f=json", timeout=15, retries=1)
+    extent = (meta.get("timeInfo") or {}).get("timeExtent") or []
+    if not extent:
+        return None
+    return datetime.fromtimestamp(int(extent[-1]) / 1000.0, timezone.utc)
+
+
+def _iem_radar(box, px):
+    # WMS 1.1.1 orders an EPSG:4326 bbox minx,miny,maxx,maxy - lon first.
+    return (IEM_RADAR + "/cgi-bin/wms/nexrad/n0q.cgi?service=WMS&version=1.1.1"
+            "&request=GetMap&layers=nexrad-n0q&styles=&format=image/png"
+            "&transparent=true&width=%d&height=%d&srs=EPSG:4326"
+            "&bbox=%.5f,%.5f,%.5f,%.5f"
+            % (px, px, box[1], box[0], box[3], box[2]))
+
+
+def _iem_radar_time():
+    got = Http.json(IEM_RADAR + "/json/radar?operation=list&product=N0Q"
+                    "&radar=USCOMP", timeout=15, retries=1)
+    scans = got.get("scans") or []
+    if not scans:
+        return None
+    return datetime.strptime(scans[-1]["ts"], "%Y-%m-%dT%H:%MZ").replace(
+        tzinfo=timezone.utc)
+
+
+RADAR_SOURCES = [
+    ("Iowa Environmental Mesonet", _iem_radar, _iem_radar_time,
+     "NWS NEXRAD mosaic via Iowa Environmental Mesonet"),
+    ("NOAA/NWS", _noaa_radar, _noaa_radar_time,
+     "NOAA National Weather Service"),
+]
+
+
+def radar_box(lat, lon, range_nm):
+    """The square of sky the scope draws, as (south, west, north, east).
+
+    The scope is a flat plan view - a degree of longitude is a degree of
+    latitude times the cosine - so the box is wider in degrees than it is
+    tall, and an EPSG:4326 image of it drops straight onto the drawing with
+    no reprojection."""
+    d_lat = range_nm / 60.0
+    d_lon = range_nm / (60.0 * max(0.05, math.cos(math.radians(lat))))
+    return (lat - d_lat, lon - d_lon, lat + d_lat, lon + d_lon)
+
+
+def _radar_prune(keep):
+    """One picture per airport and range; everything else goes."""
+    try:
+        for old in RADAR_DIR.glob("*.png"):
+            if old != keep and time.time() - old.stat().st_mtime > RADAR_TTL:
+                old.unlink()
+    except OSError:
+        pass
+
+
+def fetch_radar(rec, range_nm=25, refresh=False):
+    """A reflectivity picture centred on one airport, cached as a PNG.
+
+    available=False carries a reason, because "outside the mosaic" and "the
+    service did not answer" are different things and neither one is weather."""
+    if rec is None or rec["lat"] is None or rec["lon"] is None:
+        return {"available": False, "reason": "no position"}
+    lat, lon = rec["lat"], rec["lon"]
+    s_, w_, n_, e_ = RADAR_BOUNDS
+    if not (s_ <= lat <= n_ and w_ <= lon <= e_):
+        return {"available": False, "reason": "outside",
+                "note": "The NWS reflectivity mosaic covers the lower 48."}
+
+    span = max(1, min(int(range_nm), RADAR_MAX_RANGE))
+    key = "%s/%d" % ((rec["id"] or rec["icao"] or "?").upper(), span)
+    try:
+        cached = json.loads(RADAR_CACHE.read_text())
+        if (not refresh and cached.get("key") == key
+                and time.time() - cached.get("at", 0) < RADAR_TTL
+                and Path(cached["result"].get("path", "")).exists()):
+            return cached["result"]
+    except (OSError, ValueError, AttributeError, KeyError):
+        pass
+
+    box = radar_box(lat, lon, span)
+    result = {"available": False, "reason": "unreachable"}
+    for name, image_url, time_url, attribution in RADAR_SOURCES:
+        try:
+            raw = Http.get(image_url(box, RADAR_PX), timeout=20, retries=1,
+                           binary=True)
+        except Exception:
+            continue
+        # An error page is not a picture. Only a real PNG reaches the panel,
+        # which draws whatever it is handed.
+        if raw[:8] != b"\x89PNG\r\n\x1a\n":
+            continue
+        valid = None
+        try:
+            valid = time_url()
+        except Exception:
+            valid = None
+        try:
+            RADAR_DIR.mkdir(parents=True, exist_ok=True)
+            stamp = int((valid or datetime.now(timezone.utc)).timestamp())
+            png = RADAR_DIR / ("%s-%d-%d.png" % (key.split("/")[0], span, stamp))
+            tmp = png.with_suffix(".part")
+            tmp.write_bytes(raw)
+            os.replace(tmp, png)
+            _radar_prune(png)
+        except OSError:
+            continue
+        result = {"available": True, "path": str(png),
+                  "bbox": {"south": box[0], "west": box[1],
+                           "north": box[2], "east": box[3]},
+                  "range_nm": span,
+                  "product": "base reflectivity",
+                  "resolution_km": 1,
+                  "valid": valid.isoformat(timespec="minutes") if valid else "",
+                  "source": name, "attribution": attribution,
+                  "fetched": datetime.now(timezone.utc).isoformat(
+                      timespec="seconds")}
+        break
+
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = RADAR_CACHE.with_suffix(".part")
+        tmp.write_text(json.dumps({"key": key, "at": time.time(),
+                                   "result": result}))
+        os.replace(tmp, RADAR_CACHE)
+    except OSError:
+        pass
+    return result
+
 # --------------------------------------------------------------------------
 # FAA national airspace status
 #
@@ -4754,6 +4928,27 @@ def cmd_traffic(args):
     print("ADS-B traffic from %s (%s)." % (ADSB_SITE_URL, ADSB_ATTRIB))
 
 
+def cmd_radar(args):
+    """The reflectivity mosaic around an airport, fetched and cached."""
+    conn = db_connect()
+    rec = need_airport(conn, args.airport)
+    result = fetch_radar(rec, range_nm=args.range, refresh=args.refresh)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    if not result["available"]:
+        print("No radar: %s" % (result.get("note") or result.get("reason")))
+        return
+    age = ""
+    if result["valid"]:
+        valid = datetime.fromisoformat(result["valid"])
+        age = "  (%s)" % metar_age_text(valid.timestamp())
+    print("%s  %g nm  ·  %s%s  ·  %s" % (
+        display_id(rec), result["range_nm"],
+        result["valid"] or "time unknown", age, result["source"]))
+    print(result["path"])
+
+
 def live_weather(rec, offline=False):
     """The network half of an airport: conditions and sun times."""
     if offline:
@@ -5035,6 +5230,14 @@ def main(argv=None):
     sp.add_argument("--refresh", action="store_true")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_traffic)
+
+    sp = sub.add_parser("radar", help="weather radar mosaic around an airport")
+    sp.add_argument("airport")
+    sp.add_argument("--range", type=int, default=25,
+                    help="nautical miles across from the centre (default 25)")
+    sp.add_argument("--refresh", action="store_true", help="ignore the cache")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_radar)
 
     sp = sub.add_parser("amenities", help="food, shops and lounges by terminal/concourse")
     sp.add_argument("airport")

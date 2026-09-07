@@ -13,6 +13,15 @@
   same thing about receiver coverage every time you looked at it. It now names
   the feed and links to it, and only adds a caveat in the case that needs one -
   a feed that answered with nothing, where the empty list is worth explaining.
+- **Weather radar under the scope.** The NWS base reflectivity mosaic, drawn
+  beneath the rings, the runways and the traffic, clipped to the instrument and
+  placed by its own bounding box through the same flat projection as everything
+  else on it - so it lands where the geography says rather than being stretched
+  to fit. `Ctrl+W` or the Radar chip turns it off. The line under the scope
+  carries the scan time, the age and the source, because a mosaic is always
+  minutes old and about a kilometre per pixel, and neither is visible in the
+  picture. Outside the lower 48 there is no mosaic, so the switch is not offered
+  and the page says why - an empty scope would read as clear weather.
 - **The wind, resolved on every runway end.** The page named the favoured end
   and kept the sums to itself, so the one end you were told about was the one
   you could not check. Every end now carries its own head or tailwind and its

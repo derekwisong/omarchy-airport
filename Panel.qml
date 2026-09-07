@@ -74,6 +74,15 @@ Item {
   property int trafficRange: 10
   readonly property var trafficRanges: [5, 10, 25, 50, 100]
 
+  // Weather under the scope. On by default where there is a mosaic to draw -
+  // a feature behind a keypress nobody presses is a feature nobody has - and
+  // the chip in the row says which way it is set.
+  property var radar: null
+  property bool radarOn: true
+  property bool radarLoading: false
+  property string radarIdent: ""
+  property int radarRange: 0
+
   // Cache state. The engine keeps one 28-day FAA cycle in SQLite; the first
   // run has to fetch it, and every 28 days it has to fetch it again. Rather
   // than fail blank when it is missing, the panel builds it and says so.
@@ -325,13 +334,18 @@ Item {
     if (fboProcess.running) fboProcess.running = false
     if (amenitiesProcess.running) amenitiesProcess.running = false
     if (trafficProcess.running) trafficProcess.running = false
+    if (radarProcess.running) radarProcess.running = false
     root.fboLoading = false
     root.amenitiesLoading = false
     root.trafficLoading = false
+    root.radarLoading = false
     root.fboIdent = ""
     root.amenitiesIdent = ""
     root.trafficIdent = ""
     root.trafficRadius = 0
+    root.radar = null
+    root.radarIdent = ""
+    root.radarRange = 0
     root.amenityFilter = ""
     root.amenityTerminal = ""
     if (panelProcess.running) panelProcess.running = false
@@ -401,6 +415,7 @@ Item {
     if (ranges[next] === root.trafficRange) return
     root.trafficRange = ranges[next]
     root.ensureTraffic(true)
+    root.ensureRadar(true)
   }
 
   function ensureTraffic(force) {
@@ -415,6 +430,23 @@ Item {
                               root.currentIdent, "--radius",
                               String(root.trafficRange), "--json"]
     trafficProcess.running = true
+  }
+
+  // The mosaic moves every few minutes, not every few seconds, and the engine
+  // caches it for two - so this asks only when the airport, the range or the
+  // toggle has actually changed, plus once every couple of minutes while the
+  // page is open.
+  function ensureRadar(force) {
+    if (!root.currentIdent || !root.radarOn) return
+    if (root.radarLoading) return
+    if (!force && root.radar && root.radarIdent === root.currentIdent
+        && root.radarRange === root.trafficRange) return
+    root.radarLoading = true
+    root.radarIdent = root.currentIdent
+    root.radarRange = root.trafficRange
+    radarProcess.command = ["python3", root.engine, "radar", root.currentIdent,
+                            "--range", String(root.trafficRange), "--json"]
+    radarProcess.running = true
   }
 
   function moveSelection(delta) {
@@ -619,7 +651,7 @@ Item {
   onQueryChanged: searchDebounce.restart()
   onTabChanged: {
     if (tab === tabAmenities || tab === tabGround) ensureGroundData()
-    if (tab === tabTraffic) ensureTraffic(false)
+    if (tab === tabTraffic) { ensureTraffic(false); ensureRadar(false) }
   }
 
   // Traffic goes stale in seconds, so it refreshes itself while its tab is
@@ -630,6 +662,16 @@ Item {
     repeat: true
     running: root.opened && root.tab === root.tabTraffic && !!root.currentIdent
     onTriggered: root.ensureTraffic(true)
+  }
+
+  // The mosaic is a new scan every few minutes; asking oftener would only
+  // re-fetch the same picture.
+  Timer {
+    interval: 120000
+    repeat: true
+    running: root.opened && root.tab === root.tabTraffic && root.radarOn
+             && !!root.currentIdent
+    onTriggered: root.ensureRadar(true)
   }
 
   Timer { id: searchDebounce; interval: 180; onTriggered: root.runSearch() }
@@ -754,6 +796,17 @@ Item {
       }
     }
     onExited: root.trafficLoading = false
+  }
+  Process {
+    id: radarProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (root.radarIdent !== root.currentIdent) return
+        try { root.radar = JSON.parse(String(text || "{}")) } catch (e) { root.radar = null }
+      }
+    }
+    onExited: root.radarLoading = false
   }
   Process { id: pinProcess }
   Process {
@@ -891,6 +944,14 @@ Item {
                            && (event.key === Qt.Key_BracketLeft
                                || event.key === Qt.Key_BracketRight)) {
                   root.stepTrafficRange(event.key === Qt.Key_BracketRight ? 1 : -1)
+                  event.accepted = true
+                  // The weather layer under the scope. Ctrl for the same
+                  // reason as the retry below: a bare letter belongs to the
+                  // search field, which is still live on this page.
+                } else if (root.tab === root.tabTraffic && event.key === Qt.Key_W
+                           && (event.modifiers & Qt.ControlModifier)) {
+                  root.radarOn = !root.radarOn
+                  if (root.radarOn) root.ensureRadar(false)
                   event.accepted = true
                   // Overpass fails transiently often enough to deserve a key.
                   // Ctrl, because a bare letter belongs to the search field.
@@ -1983,9 +2044,18 @@ Item {
 
                 // ============ 2 TRAFFIC ============
                 Column {
+                  id: trafficPage
                   visible: root.tab === 2
                   width: parent.width
                   spacing: Style.space(4)
+
+                  // Whether this field has a mosaic at all. Outside the lower
+                  // 48 there is nothing to draw, so the page neither offers
+                  // the switch nor mentions the key for it - it says why,
+                  // once, under the scope.
+                  readonly property bool radarHere:
+                    !(root.radar && root.radar.available === false
+                      && root.radar.reason === "outside")
 
                   // View switch and range, clickable as well as keyed, so
                   // neither is a secret. Tab flips the view, [ and ] step the
@@ -2028,6 +2098,38 @@ Item {
 
                     Item { width: Style.space(10); height: 1 }
 
+                    // Weather, and whether it is on. Hidden where there is no
+                    // mosaic to draw rather than offered and then refused.
+                    Rectangle {
+                      visible: trafficPage.radarHere
+                      radius: Style.cornerRadius
+                      implicitWidth: radarLabel.implicitWidth + Style.space(16)
+                      implicitHeight: radarLabel.implicitHeight + Style.space(6)
+                      color: root.radarOn ? Style.selectedFill
+                        : (radarMouse.containsMouse ? Style.hoverFill : "transparent")
+                      Text {
+                        id: radarLabel
+                        anchors.centerIn: parent
+                        text: "Radar"
+                        color: root.radarOn ? Color.menu.selectedText : Color.muted
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                        font.bold: root.radarOn
+                      }
+                      MouseArea {
+                        id: radarMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          root.radarOn = !root.radarOn
+                          if (root.radarOn) root.ensureRadar(false)
+                        }
+                      }
+                    }
+
+                    Item { width: Style.space(10); height: 1 }
+
                     Repeater {
                       model: root.trafficRanges
                       delegate: Rectangle {
@@ -2056,6 +2158,7 @@ Item {
                             if (modelData === root.trafficRange) return
                             root.trafficRange = modelData
                             root.ensureTraffic(true)
+                            root.ensureRadar(true)
                           }
                         }
                       }
@@ -2066,6 +2169,8 @@ Item {
                     width: parent.width
                     textFormat: Text.PlainText
                     text: "Tab switches view · [ and ] step the range"
+                      + (trafficPage.radarHere
+                         ? " · Ctrl+W turns the weather on and off" : "")
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -2104,12 +2209,79 @@ Item {
                     onStripsChanged: requestPaint()
                     onWidthChanged: requestPaint()
 
+                    // The radar arrives as a file the engine wrote, named for
+                    // the scan it came from - so a new scan is a new URL, and
+                    // the Canvas cannot hand back the picture it already had.
+                    property string radarSrc: (root.radarOn && root.radar
+                                               && root.radar.available === true)
+                      ? "file://" + root.radar.path : ""
+                    property string radarLoaded: ""
+                    property string radarHeld: ""
+                    // Asking for the picture has to be idempotent rather
+                    // than a reaction to the source changing: the panel stays
+                    // loaded between summons, so it comes back holding the
+                    // URL it already had and a change signal would never
+                    // fire. Called on every event that could leave the two
+                    // out of step, and safe to call when they are not.
+                    function ensureRadarImage() {
+                      if (radarSrc === "") { requestPaint(); return }
+                      if (isImageLoaded(radarSrc)) {
+                        radarLoaded = radarSrc
+                        radarWait.stop()
+                      } else if (!isImageLoading(radarSrc)) {
+                        loadImage(radarSrc)
+                        radarWait.start()
+                      }
+                      // Unconditionally, because the picture can be right
+                      // while the canvas is wrong: switching the layer back on
+                      // changes nothing this function assigns - the image was
+                      // still loaded - and the empty frame would stay up.
+                      requestPaint()
+                    }
+
+                    // imageLoaded does not fire for a URL the canvas has
+                    // already seen once, which is every URL after the weather
+                    // has been switched off and on again. So the signal is
+                    // the fast path and this is the one that is always right.
+                    Timer {
+                      id: radarWait
+                      interval: 200
+                      repeat: true
+                      onTriggered: {
+                        if (scope.radarSrc === "") { stop(); return }
+                        if (scope.isImageLoaded(scope.radarSrc)) {
+                          scope.radarLoaded = scope.radarSrc
+                          stop()
+                        }
+                      }
+                    }
+
+                    onRadarSrcChanged: {
+                      // A new scan supersedes the old picture, and the engine
+                      // deletes the file it came from - so that one is let go
+                      // of. Switching the layer off is not that: the picture
+                      // stays cached so switching back is instant.
+                      if (radarSrc !== "" && radarHeld !== "" && radarHeld !== radarSrc)
+                        unloadImage(radarHeld)
+                      if (radarSrc !== "") radarHeld = radarSrc
+                      ensureRadarImage()
+                    }
+                    onVisibleChanged: if (visible) ensureRadarImage()
+                    Component.onCompleted: ensureRadarImage()
+                    onImageLoaded: ensureRadarImage()
+                    onRadarLoadedChanged: requestPaint()
+
                     // The drawing itself lives in Model.js so it can be
                     // rendered and checked outside a running shell.
                     onPaint: Model.paintScope(getContext("2d"), {
                       width: width, height: height,
                       payload: payload, range: range, strips: strips,
                       rings: Model.scopeRings(range),
+                      radar: (radarSrc !== "" && radarLoaded === radarSrc && root.radar)
+                        ? { image: radarLoaded, bbox: root.radar.bbox } : null,
+                      // Enough to read the shape of the weather, not enough
+                      // to lose the instrument drawn over it.
+                      radarAlpha: 0.32,
                       pad: Style.space(16),
                       runwayWidth: Math.max(2, Style.space(3)),
                       font: Math.round(Style.font.caption) + "px " + Style.font.family,
@@ -2117,6 +2289,20 @@ Item {
                       ink: String(Color.menu.text),
                       accent: String(Color.accent)
                     })
+                  }
+
+                  // What the weather layer is and when it was taken, said
+                  // under the picture it belongs to rather than left to be
+                  // assumed from the fact that it is drawn at all.
+                  Text {
+                    visible: root.trafficMap && root.radarOn && !!text
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.PlainText
+                    text: Model.radarNote(root.radar, root.clockTick)
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
                   }
 
                   Repeater {

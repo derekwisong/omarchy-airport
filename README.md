@@ -47,7 +47,7 @@ conditions and the links out — stays put on every page.
 |---|---|
 | **Summary** | Runway, tower and hours, airspace, fuel, attended hours, landing fee, a forecast band, and Advisories — FAA delay programs and flight restrictions within 50 nm |
 | **Weather** | Category, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, how old the observation is, a forecast timeline, raw METAR and TAF |
-| **Traffic** | What ADS-B hears nearby right now — arriving, departing, on the ground, passing over — as a plan-view scope centred on the field, or as a table, at 5, 10, 25, 50 or 100 nm |
+| **Traffic** | What ADS-B hears nearby right now — arriving, departing, on the ground, passing over — as a plan-view scope centred on the field, or as a table, at 5, 10, 25, 50 or 100 nm, over the NWS reflectivity mosaic |
 | **Amenities** | Food, shops and lounges by concourse, filterable, each linking to Google Maps |
 | **Runways** | Which runway the wind favours, then every runway per end: head and crosswind components, lengths, surface, lighting, alignment, ILS, VGSI, displaced thresholds, LDA, obstructions, pattern altitude |
 | **Procedures** | Approaches by runway, SIDs, STARs, ODPs, minimums, hot spots |
@@ -72,6 +72,7 @@ conditions and the links out — stays put on every page.
 | `Ctrl+Home` `Ctrl+End` | Top / bottom |
 | `Tab` | On Amenities, walk the concourse filter; on Traffic, switch scope / table |
 | `[` `]` | On Traffic, step the range |
+| `Ctrl+W` | On Traffic, weather radar under the scope |
 | `Esc` | Back out of a chart, then close |
 
 ## The cache
@@ -101,6 +102,7 @@ python3 $apt runways KPOU --svg     python3 $apt status DCA
 python3 $apt procedures KATL        python3 $apt wx KPOU
 python3 $apt amenities ATL          python3 $apt fbo KPOU
 python3 $apt traffic KATL           python3 $apt traffic KPOU --radius 40
+python3 $apt radar KATL --range 25
 python3 $apt nearby KPOU --radius 50 --fuel
 python3 $apt tfr KEWR --radius 50
 python3 $apt notes ATL add "Sky Club F is the good one"
@@ -122,6 +124,10 @@ Notes are markdown in `~/.local/share/airport-info/notes/<IDENT>.md`. Recents li
 - **A ground stop is not a closed airport.** It holds flights bound for the field, at the field
   they are leaving from, usually only those filed out of a few named centres. The line says
   which centres and says the runways are open, because the label alone read as a closure.
+- **The radar is minutes old, and only over the lower 48.** The mosaic is base
+  reflectivity at about a kilometre per pixel, a few minutes behind the sky, and the
+  line under the scope says which scan it is. Outside the CONUS mosaic the layer is not
+  offered at all rather than drawn empty, because an empty scope reads as clear weather.
 - **Traffic is what was heard, not what is flying.** ADS-B comes from volunteer
   receivers: an aircraft without ADS-B out, or below the horizon of every nearby receiver,
   is simply absent. Coverage is excellent over cities and thin over small fields, so the
@@ -184,6 +190,7 @@ All public and unauthenticated. No account, no API key.
 | [OurAirports](https://ourairports.com/) | Worldwide airports and runways, IATA codes, search ranking | Public domain |
 | [OpenStreetMap](https://www.openstreetmap.org/) via [Overpass](https://overpass-api.de/) | Terminal food, shops, lounges and their concourses | © OpenStreetMap contributors, **ODbL** |
 | [adsb.lol](https://adsb.lol/) | Live ADS-B traffic near an airport | © adsb.lol contributors, **ODbL** |
+| [Iowa Environmental Mesonet](https://mesonet.agron.iastate.edu/), [NOAA/NWS](https://mapservices.weather.noaa.gov/) | NEXRAD base reflectivity mosaic under the scope | NWS data, public domain |
 | [timeapi.io](https://timeapi.io/) | The IANA timezone for an airport, fetched once and cached | Free public API |
 | [AirNav](https://www.airnav.com/) | FBO names and fuel prices | © AirNav, LLC — one airport on demand, cached 24h |
 | [sunrise-sunset.org](https://sunrise-sunset.org/) | Civil twilight, sunrise, sunset | Free public API |

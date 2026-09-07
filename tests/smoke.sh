@@ -171,6 +171,12 @@ check "traffic credits ODbL"   "adsb.lol contributors, ODbL" $APT traffic KATL
 # The scope centres on the field and turns each aircraft to its own track, so
 # the payload has to carry a position for both.
 check "traffic carries the field" '"center"'   $APT traffic KATL --json
+
+# The radar mosaic: a picture for a field inside the lower 48, and a reason
+# rather than an empty scope for one outside it.
+check "radar names its source"  "nm  ·"        $APT radar KATL --range 25
+check "radar carries a bbox"    '"bbox"'       $APT radar KATL --range 25 --json
+check "radar says where it ends" "lower 48"    $APT radar EGLL
 check "traffic carries position"  '"track"'    $APT traffic KATL --json
 check "local time in payload"  '"zone"'       $APT live KATL
 check "arizona ignores DST"    "MST"          $APT live KPHX

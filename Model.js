@@ -517,15 +517,39 @@ function paintScope(ctx, o) {
             cy - (lat - centre.lat) * 60 * scale]
   }
 
+  // Weather first, underneath everything: the rings, the runways and the
+  // aircraft are what the scope is for, and the mosaic is the sky behind
+  // them. Drawn from its own bounding box through the same projection as
+  // every other point here, so it lands where the geography says rather than
+  // where the request happened to ask - and clipped to the scope, because a
+  // square of rain in a round instrument reads as a bug.
+  var weather = false
+  if (o.radar && o.radar.image && o.radar.bbox) {
+    var b = o.radar.bbox
+    var tl = at(b.north, b.west), br = at(b.south, b.east)
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(cx, cy, rpx, 0, Math.PI * 2)
+    ctx.clip()
+    ctx.globalAlpha = o.radarAlpha || 0.3
+    ctx.drawImage(o.radar.image, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1])
+    ctx.restore()
+    ctx.globalAlpha = 1
+    weather = true
+  }
+
   // Range rings. The outermost is the radius actually asked for, so it is
   // solid and the intermediate marks are dashed.
   var rings = o.rings || []
-  ctx.strokeStyle = o.muted
+  ctx.strokeStyle = weather ? o.ink : o.muted
   ctx.lineWidth = 1
   for (var i = 0; i < rings.length; i++) {
     var rr = rings[i] * scale
     if (rr > rpx + 0.5) continue
-    ctx.globalAlpha = 0.35
+    // Against a scope full of weather the usual grey disappears, so the
+    // instrument is drawn harder rather than the weather softer: the rings
+    // are what the picture is measured against.
+    ctx.globalAlpha = weather ? 0.55 : 0.35
     ctx.beginPath()
     ctx.setLineDash(i === rings.length - 1 ? [] : [3, 5])
     ctx.arc(cx, cy, rr, 0, Math.PI * 2)
@@ -537,8 +561,8 @@ function paintScope(ctx, o) {
   // north spoke they fought with the "N". Drawn first and their boxes kept, so
   // an aircraft tag later on gives way to them rather than overprinting.
   var placed = []
-  ctx.globalAlpha = 0.8
-  ctx.fillStyle = o.muted
+  ctx.globalAlpha = weather ? 1 : 0.8
+  ctx.fillStyle = weather ? o.ink : o.muted
   ctx.textAlign = "center"
   for (i = 0; i < rings.length; i++) {
     rr = rings[i] * scale
@@ -703,6 +727,26 @@ function trafficNote(traffic, tint) {
     return "Nothing heard within " + (traffic.radius_nm || 25)
       + " nm, which is not the same as nothing there. · " + source
   return source
+}
+
+
+// What the radar picture under the scope is, and when it was taken. A mosaic
+// is always minutes old and always coarse, and both of those change what it
+// can be used for, so both are said rather than left to be assumed.
+function radarNote(radar, tick) {
+  if (!radar) return ""
+  if (!radar.available)
+    return radar.reason === "outside"
+      ? (radar.note || "No radar coverage here.")
+      : "Could not reach the radar service."
+  var bits = []
+  var age = radar.valid ? Math.floor((Date.now() - Date.parse(radar.valid)) / 60000) : -1
+  bits.push("Radar " + (radar.valid ? radar.valid.substr(11, 5) + "Z" : "time unknown")
+    + (age >= 0 ? "  ·  " + (age < 1 ? "just now" : age + " min ago") : ""))
+  bits.push((radar.product || "reflectivity")
+    + (radar.resolution_km ? ", ~" + radar.resolution_km + " km" : ""))
+  bits.push(radar.source || "")
+  return bits.join("  ·  ")
 }
 
 

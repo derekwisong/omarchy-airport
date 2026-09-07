@@ -15,9 +15,14 @@ function check(name, got, want) {
 }
 
 function ctx() {
-  const c = { ops: 0, texts: [], fills: 0, strokes: 0 };
+  const c = { ops: 0, texts: [], fills: 0, strokes: 0, images: [], clips: 0 };
   ["reset", "beginPath", "arc", "moveTo", "lineTo", "closePath", "save",
    "restore", "translate", "rotate", "setLineDash"].forEach(k => c[k] = () => c.ops++);
+  c.clip = () => { c.clips++; c.ops++; };
+  c.drawImage = (src, x, y, w, h) => {
+    c.images.push({ src: String(src), x: x, y: y, w: w, h: h, at: c.ops });
+    c.ops++;
+  };
   c.fill = () => { c.fills++; c.ops++; };
   c.stroke = () => { c.strokes++; c.ops++; };
   c.fillText = (t) => { c.texts.push(String(t)); c.ops++; };
@@ -81,6 +86,35 @@ check("colliding tags are dropped",
 // A runway with no coordinates is skipped rather than drawn at the pole.
 const noCoords = paint([], { strips: [{ ends: [{ lat: null }, { lat: null }] }] });
 check("a runway without coordinates is skipped", noCoords.n, 0);
+
+// The radar picture goes under the instrument, clipped to it, and is placed
+// by its own bounding box rather than by the range that was asked for - so a
+// picture that came back covering a different box lands where the geography
+// says, not stretched over the rings.
+const RADAR = { image: "file:///tmp/radar.png",
+                bbox: { south: CENTRE.lat - 25 / 60, north: CENTRE.lat + 25 / 60,
+                        west: CENTRE.lon - 25 / (60 * Math.cos(CENTRE.lat * Math.PI / 180)),
+                        east: CENTRE.lon + 25 / (60 * Math.cos(CENTRE.lat * Math.PI / 180)) } };
+const withRadar = paint([NORTH], { radar: RADAR }).c;
+check("the radar is drawn", withRadar.images.length, 1);
+check("the radar is clipped to the scope", withRadar.clips > 0, true);
+check("the radar is drawn before anything else",
+      withRadar.images[0].at < 6, true);
+// A 25 nm box on a 430 px scope with 16 px of padding spans the full width.
+check("the radar box fills the scope",
+      Math.round(withRadar.images[0].w), 2 * (430 / 2 - 16));
+check("the radar box is square on the drawing",
+      Math.round(withRadar.images[0].w), Math.round(withRadar.images[0].h));
+// Half the range means half the picture on screen: the box is placed by where
+// its corners fall, so a stale box at the old range does not silently rescale.
+const halfBox = { image: "file:///tmp/radar.png",
+                  bbox: { south: CENTRE.lat - 12.5 / 60, north: CENTRE.lat + 12.5 / 60,
+                          west: CENTRE.lon - 12.5 / (60 * Math.cos(CENTRE.lat * Math.PI / 180)),
+                          east: CENTRE.lon + 12.5 / (60 * Math.cos(CENTRE.lat * Math.PI / 180)) } };
+check("a smaller box draws smaller",
+      Math.round(paint([], { radar: halfBox }).c.images[0].w),
+      Math.round(withRadar.images[0].w / 2));
+check("no radar, no image", paint([NORTH]).c.images.length, 0);
 
 check("rings for an odd range", m.scopeRings(37).join(","), "19,37");
 check("rings for a preset range", m.scopeRings(50).join(","), "10,25,50");
