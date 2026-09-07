@@ -20,6 +20,23 @@
 
 ### Changed
 
+- **Present weather, which the panel was dropping entirely.** A METAR codes
+  what the sky is *doing* separately from what it looks like, and the plugin
+  read the cloud layers, the temperature and the wind while saying nothing at
+  all about the thunderstorm: Miami reported `-TSRA BR` and the conditions line
+  said "Scattered clouds at 1,900 ft". It now leads with it, in words -
+  "Thunderstorm with light rain, mist" - decoded properly, so `+SHRA` is heavy
+  rain showers, `FZFG` is freezing fog, `VCTS` is a thunderstorm in the
+  vicinity and `+FC` is a tornado rather than a heavy funnel cloud.
+- **The weather reads as a filled-in form.** Fourteen label-and-value rows ran
+  down the left of the page and spent most of its width on nothing, which
+  pushed the raw observation and the forecast timeline off the bottom. The same
+  facts are cells now - label over answer - flowing across the page and
+  wrapping where they run out: four rows instead of fourteen, and the timeline
+  is above the fold. Each cell takes the width its own answer needs rather than
+  a share of a fixed grid, because a grid left a third of the page empty
+  whenever two long answers met.
+
 - **One way of showing that the panel is waiting.** The sliding bars are gone.
   In their place, the sequenced flashers off an approach light system - the
   rabbit, the strip that runs toward the threshold and is the first thing you

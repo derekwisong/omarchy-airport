@@ -2027,9 +2027,15 @@ def humanize_weather(metar, taf, elev):
                 isa = 15 - 2 * (elev / 1000.0)
                 density = round(pressure + 120 * (temp - isa))
 
+    # What the sky is *doing*, before what it looks like: a thunderstorm at the
+    # field outranks the cloud layers it came in with.
+    weather_now = present_weather(metar.get("wxString"))
+
     summary_bits = []
+    if weather_now:
+        summary_bits.append(weather_now[0].upper() + weather_now[1:])
     if sky:
-        summary_bits.append(sky[0].upper() + sky[1:])
+        summary_bits.append(sky[0].upper() + sky[1:] if not weather_now else sky)
     if temperature:
         summary_bits.append(temperature)
     if wind:
@@ -2071,6 +2077,8 @@ def humanize_weather(metar, taf, elev):
         "category_text": CATEGORY_TEXT.get(metar.get("fltCat", ""), ""),
         "wind": wind,
         "sky": sky,
+        "present": weather_now,
+        "wx": str(metar.get("wxString") or "").strip(),
         "ceiling": ceiling_text,
         "ceiling_ft": ceiling,
         "visibility": vis_text,
@@ -2116,6 +2124,92 @@ def metar_age_text(epoch, now=None):
     if minutes < 60:
         return "%d min ago" % minutes
     return "%dh %02dm ago" % (minutes // 60, minutes % 60)
+
+
+# --------------------------------------------------------------------------
+# Present weather
+#
+# A METAR says what the sky is doing in a code of its own - "-TSRA BR" is a
+# thunderstorm with light rain and mist - and the panel was printing the cloud
+# layers, the temperature and the wind while saying nothing at all about the
+# thunderstorm. It is the first thing anybody needs to be told, so it goes
+# first, in words.
+# --------------------------------------------------------------------------
+
+WX_INTENSITY = {"-": "light", "+": "heavy"}
+
+WX_DESCRIPTOR = {"MI": "shallow", "PR": "partial", "BC": "patchy",
+                 "DR": "low drifting", "BL": "blowing", "SH": "showers",
+                 "TS": "thunderstorm", "FZ": "freezing"}
+
+WX_PHENOMENON = {
+    "DZ": "drizzle", "RA": "rain", "SN": "snow", "SG": "snow grains",
+    "IC": "ice crystals", "PL": "ice pellets", "GR": "hail",
+    "GS": "small hail", "UP": "unidentified precipitation",
+    "BR": "mist", "FG": "fog", "FU": "smoke", "VA": "volcanic ash",
+    "DU": "widespread dust", "SA": "sand", "HZ": "haze", "PY": "spray",
+    "PO": "dust whirls", "SQ": "squalls", "FC": "funnel cloud",
+    "SS": "sandstorm", "DS": "duststorm",
+}
+
+WX_GROUP = re.compile(
+    r"^(?P<vicinity>VC)?(?P<intensity>[-+])?(?P<vicinity2>VC)?"
+    r"(?P<descriptors>(?:MI|PR|BC|DR|BL|SH|TS|FZ)*)"
+    r"(?P<phenomena>(?:DZ|RA|SN|SG|IC|PL|GR|GS|UP|BR|FG|FU|VA|DU|SA|HZ|PY|"
+    r"PO|SQ|FC|SS|DS)*)$")
+
+
+def _split_codes(text, width=2):
+    return [text[i:i + width] for i in range(0, len(text), width)]
+
+
+def wx_phrase(group):
+    """One present-weather group - "-TSRA", "VCTS", "FZFG" - in English."""
+    match = WX_GROUP.match(group.strip().upper())
+    if not match or not group.strip():
+        return ""
+    vicinity = bool(match.group("vicinity") or match.group("vicinity2"))
+    intensity = WX_INTENSITY.get(match.group("intensity") or "", "")
+    descriptors = _split_codes(match.group("descriptors"))
+    phenomena = [WX_PHENOMENON[c] for c in _split_codes(match.group("phenomena"))
+                 if c in WX_PHENOMENON]
+    if not descriptors and not phenomena:
+        return ""
+
+    # A tornado is written as a heavy funnel cloud, and is not a thing to
+    # report in the same breath as heavy rain.
+    if "FC" in _split_codes(match.group("phenomena")) and intensity == "heavy":
+        return "tornado or waterspout" + (" nearby" if vicinity else "")
+
+    falling = " and ".join(phenomena) if phenomena else ""
+    said = ""
+    if "TS" in descriptors:
+        # The storm is the headline; the rain in it is a detail of the storm.
+        said = "thunderstorm"
+        if falling:
+            said += " with %s" % (" ".join(x for x in (intensity, falling) if x))
+    elif "SH" in descriptors:
+        said = " ".join(x for x in (intensity, falling or "precipitation") if x)
+        said += " showers"
+    elif "FZ" in descriptors:
+        said = " ".join(x for x in (intensity, "freezing", falling) if x)
+    elif "BL" in descriptors or "DR" in descriptors:
+        word = "blowing" if "BL" in descriptors else "low drifting"
+        said = " ".join(x for x in (word, falling) if x)
+    elif descriptors:
+        said = " ".join(x for x in (WX_DESCRIPTOR.get(descriptors[0], ""),
+                                    intensity, falling) if x)
+    else:
+        said = " ".join(x for x in (intensity, falling) if x)
+    if vicinity:
+        said += " in the vicinity"
+    return said.strip()
+
+
+def present_weather(raw):
+    """Every present-weather group in a METAR, read out and joined."""
+    said = [wx_phrase(group) for group in str(raw or "").split() if group]
+    return ", ".join(x for x in said if x)
 
 
 # Frequencies worth showing on a field page, in the order a pilot reads them.

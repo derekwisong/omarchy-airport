@@ -266,12 +266,45 @@ function observedAge(w, tick) {
 }
 
 
+// The same facts as cells rather than as rows.
+//
+// Fourteen label-and-value rows down the left of a nine-hundred-pixel page
+// spent most of the page on nothing and pushed the raw observation off the
+// bottom. These flow across it instead, each cell as wide as its answer needs:
+// "30.21 inHg" is a short cell, "overcast at 900 ft, gusting 22 kt" is a long
+// one, and the eye reads them in the same order either way.
+function weatherCells(w, header, tick) {
+  var rows = weatherRows(w, header, tick)
+  var out = []
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i]
+    out.push({ k: row.k, v: row.v, accent: row.accent, warn: row.warn,
+               span: cellSpan(row.v) })
+  }
+  return out
+}
+
+
+// How much width an answer wants, in three sizes. Measured on the text rather
+// than fixed per field, because "calm" and "from the north-northeast (030°) at
+// 15 kt, gusting 22" are both the wind.
+function cellSpan(value) {
+  var n = String(value || "").length
+  if (n <= 14) return 1
+  if (n <= 34) return 2
+  return 3
+}
+
+
 // Weather detail rows: plain language first, the numbers a pilot needs after.
 function weatherRows(w, header, tick) {
   if (!w || !w.available) return []
   var rows = []
   function add(k, v, accent) { if (v) rows.push({ k: k, v: v, accent: accent === true }) }
   add("Flight category", w.category_text || w.category, true)
+  // What the sky is doing, when it is doing anything: rain, fog, a
+  // thunderstorm. First, because it outranks every other line here.
+  add("Weather", w.present)
   add("Wind", w.wind)
   add("Visibility", w.visibility)
   add("Sky", w.sky)

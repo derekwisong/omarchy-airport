@@ -163,6 +163,13 @@ else
   echo "FAIL present weather decoding"; python3 tests/wx.py; fail=$((fail+1))
 fi
 
+# Present weather: the coded half of a METAR, offline.
+if python3 tests/wx.py >/dev/null 2>&1; then
+  echo "ok   present weather decoding"; pass=$((pass+1))
+else
+  echo "FAIL present weather decoding"; python3 tests/wx.py; fail=$((fail+1))
+fi
+
 # Traffic phase and local time, likewise offline.
 if python3 tests/traffic.py >/dev/null 2>&1; then
   echo "ok   traffic phase and clock"; pass=$((pass+1))

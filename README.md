@@ -46,7 +46,7 @@ conditions and the links out — stays put on every page.
 | Page | What's there |
 |---|---|
 | **Summary** | Runway, tower and hours, airspace, fuel, attended hours, landing fee, a forecast band, and Advisories — FAA delay programs and flight restrictions within 50 nm |
-| **Weather** | Category, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, how old the observation is, a forecast timeline, raw METAR and TAF |
+| **Weather** | Category, present weather in words, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, how old the observation is, a forecast timeline, raw METAR and TAF |
 | **Traffic** | What ADS-B hears nearby right now — arriving, departing, on the ground, passing over — as a plan-view scope centred on the field, or as a table, at 5, 10, 25, 50 or 100 nm, over the NWS reflectivity mosaic |
 | **Amenities** | Food, shops and lounges by concourse, filterable, each linking to Google Maps |
 | **Ground** | How you leave: rail with the lines that call and where they run, the airport's own people mover stop by stop, buses, taxi ranks, car rental, ferries and bike share — each with the walk from the terminal |

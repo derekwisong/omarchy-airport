@@ -1985,35 +1985,64 @@ Item {
                     font.pixelSize: Style.font.body
                   }
 
-                  Repeater {
-                    model: Model.weatherRows(root.weather, root.header,
-                                             root.clockTick)
-                    delegate: Row {
-                      required property var modelData
-                      visible: !!modelData.v
-                      width: body.width
-                      spacing: Style.space(10)
-                      Text {
-                        width: Style.space(126)
-                        textFormat: Text.PlainText
-                        text: modelData.k
-                        color: Color.muted
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.bodySmall
-                      }
-                      Text {
-                        width: parent.width - Style.space(136)
-                        wrapMode: Text.WordWrap
-                        textFormat: Text.PlainText
-                        text: modelData.v
-                        // An observation past its cycle is the one row here
-                        // that is not simply a fact about the weather, so it
-                        // is the one row that changes colour.
-                        color: modelData.warn ? Color.urgent
-                          : (modelData.accent ? Model.categoryColor((root.weather && root.weather.category) || "", Color.menu.text) : Color.menu.text)
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.bodySmall
-                        font.bold: modelData.accent === true || modelData.warn === true
+                  // The conditions as a filled-in form rather than a column of
+                  // rows: label over answer, cells flowing across the page and
+                  // wrapping where they run out. A cell is one, two or three
+                  // units wide depending on how long its answer is, so the
+                  // grid stays a grid.
+                  Flow {
+                    id: weatherForm
+                    width: parent.width
+                    // Flow spaces both directions alike, and these want more
+                    // air between columns than between rows - so the gap here
+                    // is the vertical one and each cell carries its own margin
+                    // to the right of it.
+                    spacing: Style.space(5)
+
+                    Repeater {
+                      model: Model.weatherCells(root.weather, root.header,
+                                                root.clockTick)
+                      delegate: Column {
+                        required property var modelData
+                        visible: !!modelData.v
+                        // As wide as its own answer, with a floor so a row of
+                        // short ones does not read as confetti. A grid of
+                        // fixed columns left a third of the page empty
+                        // whenever two long answers met.
+                        width: Math.min(weatherForm.width,
+                                        Math.max(Style.space(112),
+                                                 cellLabel.implicitWidth,
+                                                 cellValue.implicitWidth)
+                                        + rightPadding)
+                        spacing: 0
+                        rightPadding: Style.space(13)
+
+                        Text {
+                          id: cellLabel
+                          width: parent.width
+                          elide: Text.ElideRight
+                          textFormat: Text.PlainText
+                          text: modelData.k.toUpperCase()
+                          color: Color.muted
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                          font.letterSpacing: 0.8
+                        }
+                        Text {
+                          id: cellValue
+                          width: parent.width
+                          elide: Text.ElideRight
+                          textFormat: Text.PlainText
+                          text: modelData.v
+                          // An observation past its cycle is the one cell here
+                          // that is not simply a fact about the weather, so it
+                          // is the one cell that changes colour.
+                          color: modelData.warn ? Color.urgent
+                            : (modelData.accent ? Model.categoryColor((root.weather && root.weather.category) || "", Color.menu.text) : Color.menu.text)
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.body
+                          font.bold: modelData.accent === true || modelData.warn === true
+                        }
                       }
                     }
                   }
