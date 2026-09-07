@@ -13,6 +13,10 @@
   same thing about receiver coverage every time you looked at it. It now names
   the feed and links to it, and only adds a caveat in the case that needs one -
   a feed that answered with nothing, where the empty list is worth explaining.
+- **The links out moved down a line.** They sat on the top line, in the gap
+  between the airport's name and the clock - which is the gap a long name
+  needs. They are right-aligned on the identifier line now, opposite the flight
+  category, where the width was empty anyway.
 
 ### Fixed
 

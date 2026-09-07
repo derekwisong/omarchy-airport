@@ -1048,9 +1048,7 @@ Item {
               // row - ICAO, place, elevation - share one muted line.
               Item {
                 width: parent.width
-                height: Math.max(identText.implicitHeight,
-                                 Math.max(clockCol.implicitHeight,
-                                          linkRow.implicitHeight))
+                height: Math.max(identText.implicitHeight, clockCol.implicitHeight)
 
                 Text {
                   id: identText
@@ -1069,7 +1067,7 @@ Item {
                 Text {
                   anchors.left: identText.right
                   anchors.leftMargin: Style.space(10)
-                  anchors.right: linkRow.left
+                  anchors.right: clockCol.left
                   anchors.rightMargin: Style.space(10)
                   anchors.baseline: identText.baseline
                   elide: Text.ElideRight
@@ -1078,52 +1076,6 @@ Item {
                   color: Color.menu.text
                   font.family: Style.font.family
                   font.pixelSize: Style.font.title
-                }
-
-                // Where the airport goes when you leave. Seven words took a
-                // row of the header to themselves; seven glyphs fit in the
-                // space the top line was already wasting, between the name
-                // and the clock. The name is one hover away, which is the
-                // trade an icon always asks for - worth it here because these
-                // are the same seven every time, in the same order, and you
-                // learn them once.
-                Row {
-                  id: linkRow
-                  anchors.right: clockCol.left
-                  anchors.rightMargin: Style.space(12)
-                  anchors.verticalCenter: parent.verticalCenter
-                  spacing: Style.space(2)
-
-                  Repeater {
-                    model: Model.linkRows(root.airportData)
-                    delegate: Rectangle {
-                      required property var modelData
-                      radius: Style.cornerRadius
-                      implicitWidth: Style.space(24)
-                      implicitHeight: Style.space(22)
-                      color: linkMouse.containsMouse ? Style.hoverFill : "transparent"
-
-                      OpticalGlyph {
-                        anchors.centerIn: parent
-                        text: modelData.icon
-                        fontSize: Style.font.icon
-                        color: linkMouse.containsMouse ? Color.accent : Color.muted
-                      }
-
-                      MouseArea {
-                        id: linkMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.openLink(modelData.url)
-                      }
-
-                      PanelToolTip {
-                        visible: linkMouse.containsMouse
-                        text: modelData.label
-                      }
-                    }
-                  }
                 }
 
                 // What time it is where you are going. Absent entirely when
@@ -1160,43 +1112,101 @@ Item {
                 }
               }
 
-              Row {
+              // The identifier line, and the way out to somebody else's site.
+              // The links sat on the top line, in the gap between the airport's
+              // name and the clock, which is the gap a long name needs; they
+              // live on this line now, right-aligned, where the row ends at the
+              // flight category and the rest of the width is empty anyway.
+              Item {
                 id: factsRow
                 width: parent.width
-                spacing: Style.space(8)
+                height: Math.max(factsLeft.implicitHeight, linkRow.implicitHeight)
 
-                Text {
+                Row {
+                  id: factsLeft
+                  anchors.left: parent.left
+                  anchors.right: linkRow.left
+                  anchors.rightMargin: Style.space(10)
                   anchors.verticalCenter: parent.verticalCenter
-                  textFormat: Text.PlainText
-                  text: Model.headerFacts(root.header)
-                  color: Color.muted
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.bodySmall
+                  spacing: Style.space(8)
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    text: Model.headerFacts(root.header)
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  // The flight category was a filled pill, which made the one
+                  // thing on the page that is only ever a hint shout louder than
+                  // the airport's own name. A dot carries the same colour and
+                  // asks for none of the attention.
+                  Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: !!(root.header && root.header.category)
+                    width: Style.space(8)
+                    height: width
+                    radius: width / 2
+                    color: Model.categoryColor(
+                      (root.header && root.header.category) || "", Color.muted)
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: !!(root.header && root.header.category)
+                    textFormat: Text.PlainText
+                    text: root.header ? (root.header.category || "") : ""
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: true
+                  }
                 }
 
-                // The flight category was a filled pill, which made the one
-                // thing on the page that is only ever a hint shout louder than
-                // the airport's own name. A dot carries the same colour and
-                // asks for none of the attention.
-                Rectangle {
+                // Where the airport goes when you leave. Seven words took a row
+                // of the header to themselves; seven glyphs fit in the space
+                // this line was already wasting. The name is one hover away,
+                // which is the trade an icon always asks for - worth it here
+                // because these are the same seven every time, in the same
+                // order, and you learn them once.
+                Row {
+                  id: linkRow
+                  anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
-                  visible: !!(root.header && root.header.category)
-                  width: Style.space(8)
-                  height: width
-                  radius: width / 2
-                  color: Model.categoryColor(
-                    (root.header && root.header.category) || "", Color.muted)
-                }
+                  spacing: Style.space(2)
 
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  visible: !!(root.header && root.header.category)
-                  textFormat: Text.PlainText
-                  text: root.header ? (root.header.category || "") : ""
-                  color: Color.muted
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.bodySmall
-                  font.bold: true
+                  Repeater {
+                    model: Model.linkRows(root.airportData)
+                    delegate: Rectangle {
+                      required property var modelData
+                      radius: Style.cornerRadius
+                      implicitWidth: Style.space(24)
+                      implicitHeight: Style.space(22)
+                      color: linkMouse.containsMouse ? Style.hoverFill : "transparent"
+
+                      OpticalGlyph {
+                        anchors.centerIn: parent
+                        text: modelData.icon
+                        fontSize: Style.font.icon
+                        color: linkMouse.containsMouse ? Color.accent : Color.muted
+                      }
+
+                      MouseArea {
+                        id: linkMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.openLink(modelData.url)
+                      }
+
+                      PanelToolTip {
+                        visible: linkMouse.containsMouse
+                        text: modelData.label
+                      }
+                    }
+                  }
                 }
               }
 
