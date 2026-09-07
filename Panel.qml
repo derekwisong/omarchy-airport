@@ -2512,7 +2512,10 @@ Item {
                     }
                     Text {
                       width: Style.space(120)
-                      text: "SIZE"
+                      // One column of numbers: the pair rows carry the size,
+                      // the end rows under them carry the wind, and neither is
+                      // ever in the other's row.
+                      text: Model.windReady(root.weather) ? "SIZE / WIND" : "SIZE"
                       color: Color.muted
                       font.family: Style.font.family
                       font.pixelSize: Style.font.caption
@@ -2531,7 +2534,7 @@ Item {
                   }
 
                   Repeater {
-                    model: Model.runwayRows(root.runwayData)
+                    model: Model.runwayRows(root.runwayData, root.weather)
                     delegate: Column {
                       required property var modelData
                       width: body.width
@@ -2546,21 +2549,24 @@ Item {
                                                                 : Text.AlignRight
                           textFormat: Text.PlainText
                           text: modelData.id
-                          color: Model.isFavouredEnd(modelData, root.runwayData,
-                                                     root.weather)
-                            ? Color.accent
+                          color: modelData.favoured ? Color.accent
                             : (modelData.runway ? Color.menu.text : Color.muted)
                           font.family: "monospace"
                           font.pixelSize: Style.font.bodySmall
                           font.bold: modelData.runway === true
-                            || Model.isFavouredEnd(modelData, root.runwayData,
-                                                   root.weather)
+                            || modelData.favoured === true
                         }
+                        // Along the runway and across it, per end, so the
+                        // starred end is a number you can check rather than a
+                        // verdict to take on trust - and so the end that is
+                        // not favoured but has less crosswind is visible too.
                         Text {
                           width: Style.space(120)
                           textFormat: Text.PlainText
-                          text: modelData.dims
-                          color: Color.menu.text
+                          text: modelData.runway ? modelData.dims
+                                                 : (modelData.wind || "")
+                          color: modelData.runway ? Color.menu.text
+                            : (modelData.favoured ? Color.accent : Color.muted)
                           font.family: "monospace"
                           font.pixelSize: Style.font.bodySmall
                         }

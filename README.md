@@ -49,7 +49,7 @@ conditions and the links out — stays put on every page.
 | **Weather** | Category, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, a forecast timeline, raw METAR and TAF |
 | **Traffic** | What ADS-B hears nearby right now — arriving, departing, on the ground, passing over — as a plan-view scope centred on the field, or as a table, at 5, 10, 25, 50 or 100 nm |
 | **Amenities** | Food, shops and lounges by concourse, filterable, each linking to Google Maps |
-| **Runways** | Which runway the wind favours, then every runway per end: lengths, surface, lighting, alignment, ILS, VGSI, displaced thresholds, LDA, obstructions, pattern altitude |
+| **Runways** | Which runway the wind favours, then every runway per end: head and crosswind components, lengths, surface, lighting, alignment, ILS, VGSI, displaced thresholds, LDA, obstructions, pattern altitude |
 | **Procedures** | Approaches by runway, SIDs, STARs, ODPs, minimums, hot spots |
 | **Frequencies** | The ones you'd tune, with tower hours; approach and departure filed separately |
 | **Services** | Attended hours, parking, customs, manager, owner, FBOs with fuel prices |

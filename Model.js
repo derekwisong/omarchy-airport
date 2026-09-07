@@ -23,8 +23,9 @@ function feet(value) {
 
 // ---- helpers for the panel tabs -------------------------------------------
 
-function runwayRows(data) {
+function runwayRows(data, weather) {
   var list = (data && data.runways) || []
+  var best = favouredEnd(data, weather)
   var rows = []
   for (var i = 0; i < list.length; i++) {
     var r = list[i]
@@ -46,6 +47,8 @@ function runwayRows(data) {
       if (e.lda && r.length && Number(e.lda) < Number(r.length))
         tags.push("LDA " + feet(e.lda))
       rows.push({ runway: false, id: e.id, dims: "", spec: tags.join("  ·  "),
+                  wind: windCell(e.true_align, weather),
+                  favoured: !!best && best.id === e.id,
                   obstruction: e.obstruction
                     ? (e.obstruction.toLowerCase()
                        + (e.obst_height ? " " + e.obst_height + "' high" : "")
@@ -1028,12 +1031,42 @@ function windComponents(trueAlign, windDir, windSpeed) {
   }
 }
 
+// True when there is a wind worth resolving into components: a direction and
+// enough of it to matter. Below three knots, and with a variable direction,
+// the sums are arithmetic on noise - the same threshold the favoured end uses.
+function windReady(weather) {
+  return !!weather && weather.available === true
+    && weather.wind_dir !== null && weather.wind_dir !== undefined
+    && weather.wind_speed >= 3
+}
+
+
+// What the wind does to one runway end, in the two numbers you land on:
+// along the runway, and across it. Abbreviated because it is a table column
+// under a line that has just spelled both words out - hw and tw along, xw
+// across, with the side the crosswind comes from.
+function windCell(trueAlign, weather) {
+  if (!windReady(weather)) return ""
+  var align = parseFloat(trueAlign)
+  if (!(align >= 0)) return ""
+  var c = windComponents(align, weather.wind_dir, weather.wind_speed)
+  var along = Math.round(Math.abs(c.head))
+  var cross = Math.round(c.cross)
+  var bits = []
+  // A component that rounds to nothing is left out rather than written as a
+  // zero: on a runway straight into the wind the line should say "8 hw" and
+  // stop, not spend half its width saying there is no crosswind.
+  if (along) bits.push(along + (c.head >= 0 ? " hw" : " tw"))
+  if (cross) bits.push(cross + " xw " + (c.fromRight ? "R" : "L"))
+  return bits.join("  ·  ")
+}
+
+
 // The end with the most headwind. Null when there is nothing to favour: calm,
 // variable, or no report at all - all of which are silence rather than a guess.
 function favouredEnd(runwayData, weather) {
-  if (!runwayData || !weather || !weather.available) return null
+  if (!runwayData || !windReady(weather)) return null
   var dir = weather.wind_dir, speed = weather.wind_speed
-  if (dir === null || dir === undefined || !(speed >= 3)) return null
   var best = null
   var runways = runwayData.runways || []
   for (var i = 0; i < runways.length; i++) {
@@ -1063,15 +1096,6 @@ function favouredLine(runwayData, weather) {
     + Math.round(best.head) + " kt"
     + (cross > 0 ? ", crosswind " + cross + " kt from the "
                    + (best.fromRight ? "right" : "left") : ", no crosswind")
-}
-
-
-// True when this table row is the end the wind favours, so the table can mark
-// it without the caller recomputing the sum per row.
-function isFavouredEnd(row, runwayData, weather) {
-  if (!row || row.runway) return false
-  var best = favouredEnd(runwayData, weather)
-  return !!best && best.id === row.id
 }
 
 

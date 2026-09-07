@@ -13,6 +13,13 @@
   same thing about receiver coverage every time you looked at it. It now names
   the feed and links to it, and only adds a caveat in the case that needs one -
   a feed that answered with nothing, where the empty list is worth explaining.
+- **The wind, resolved on every runway end.** The page named the favoured end
+  and kept the sums to itself, so the one end you were told about was the one
+  you could not check. Every end now carries its own head or tailwind and its
+  crosswind with the side it comes from, in the column the pair rows use for
+  the size - which is how you see that 33L is favoured by a knot while 04R has
+  eight across it. The column collapses when the wind is calm or variable,
+  because then the numbers would be arithmetic on noise.
 - **The links out moved down a line.** They sat on the top line, in the gap
   between the airport's name and the clock - which is the gap a long name
   needs. They are right-aligned on the identifier line now, opposite the flight

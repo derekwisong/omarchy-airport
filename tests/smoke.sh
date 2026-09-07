@@ -138,6 +138,16 @@ if command -v node >/dev/null 2>&1; then
   fi
 fi
 
+# Wind components per runway end, and the age of the observation they came
+# from. Offline: both are arithmetic, and neither should need a windy day.
+if command -v node >/dev/null 2>&1; then
+  if node tests/wind.js >/dev/null 2>&1; then
+    echo "ok   wind components and observation age"; pass=$((pass+1))
+  else
+    echo "FAIL wind components and observation age"; node tests/wind.js; fail=$((fail+1))
+  fi
+fi
+
 # Traffic phase and local time, likewise offline.
 if python3 tests/traffic.py >/dev/null 2>&1; then
   echo "ok   traffic phase and clock"; pass=$((pass+1))
