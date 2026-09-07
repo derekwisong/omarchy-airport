@@ -20,6 +20,12 @@
 
 ### Fixed
 
+- **The local time was missing on a field's first visit.** The zone is a
+  network lookup cached per airport, and the first draw is built without the
+  network, so a field seen for the first time had no clock. The answer arrived
+  moments later but was folded in only alongside the weather - so it was missed
+  entirely when the station was quiet, and the time appeared only on a second
+  visit, once the zone came back from the cache. It is folded in on its own now.
 - **Traffic was crediting this airport with its neighbours' movements.** Phase
   was decided by height and vertical rate alone, so every jet climbing out of
   Teterboro was reported as departing Westchester twenty miles away, and jets

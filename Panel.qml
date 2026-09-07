@@ -266,23 +266,32 @@ Item {
     try { live = JSON.parse(String(text || "{}")) } catch (e) { live = null }
     root.liveLoading = false
     if (!root.airportData) return
-    if (!live || !live.weather) {
-      // The fetch produced nothing usable. Stop saying "fetching" forever, and
-      // do not let the absent answer read as "this airport has no station".
-      if (root.airportData.weather && root.airportData.weather.pending) {
-        var stalled = {}
-        for (var k in root.airportData) stalled[k] = root.airportData[k]
-        stalled.weather = { "available": false, "unreachable": true }
-        root.airportData = stalled
-      }
-      return
-    }
     // Arrowing on while this was in flight means the answer is for an airport
     // that is no longer on screen. Drop it rather than showing ATL's weather
     // under POU's name.
-    if (live.ident && live.ident !== root.currentIdent) return
+    if (live && live.ident && live.ident !== root.currentIdent) return
+
     var next = {}
     for (var key in root.airportData) next[key] = root.airportData[key]
+
+    // The zone is a network lookup, cached per airport, and the first draw is
+    // built with --no-live - so an airport seen for the first time has no
+    // clock until this answer arrives. It has to be folded in on its own,
+    // before the weather is judged: it used to ride along with the weather
+    // merge, so a field whose station was quiet showed no local time until it
+    // was visited a second time and the cached zone came back with the record.
+    if (live && live.local && live.local.offset_minutes !== null
+        && live.local.offset_minutes !== undefined)
+      next.local = live.local
+
+    if (!live || !live.weather) {
+      // The fetch produced nothing usable. Stop saying "fetching" forever, and
+      // do not let the absent answer read as "this airport has no station".
+      if (root.airportData.weather && root.airportData.weather.pending)
+        next.weather = { "available": false, "unreachable": true }
+      root.airportData = next
+      return
+    }
     if (live.tfr) next.tfr = live.tfr
     if (live.status) next.status = live.status
     if (live.weather) {
