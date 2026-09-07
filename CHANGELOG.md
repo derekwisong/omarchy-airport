@@ -20,6 +20,18 @@
 
 ### Changed
 
+- **The gate each place is at.** "Concourse A" is a hundred metres of corridor;
+  OpenStreetMap maps the gates, and 194 of Atlanta's 210 mapped places sit
+  within ninety metres of one. Step-free access and wi-fi come along in the
+  same read, where the map says so - and where it does not, the page says
+  nothing rather than guessing.
+- **The airport's own website, on Services and on a key.** OpenStreetMap
+  carries it on the aerodrome itself and the plugin was reading only the shape
+  of that polygon. `Ctrl+O` opens it from any page - and where the ground data
+  has not been fetched yet, the key asks for it and opens the site when it
+  lands rather than doing nothing. It is the one link that answers what no data
+  set carries: today's construction, where the rideshare pickup moved to.
+
 - **Runway alignment in magnetic, as the runway is numbered.** NASR publishes
   true bearings and the magnetic variation beside them, and the page was
   showing the true one - which is why runway 06 read as 051°T and looked wrong

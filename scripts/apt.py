@@ -2669,6 +2669,31 @@ def q_pois(bbox):
 """
 
 
+def safe_url(value):
+    """http(s) or nothing. Whatever this is, the panel is going to open it."""
+    text = str(value or "").strip()
+    return text if re.match(r"^https?://[^\s<>\"']+$", text) else ""
+
+
+# How far a gate can be from a shop and still be the gate it is at. Wider than
+# a gate lounge, narrower than a concourse: at Atlanta every mapped restaurant
+# lands within about thirty metres of one.
+GATE_REACH_M = 90
+
+
+def nearest_gate(poi, gates):
+    """The gate this place is at, by its number, or "" if none is close."""
+    if poi.get("lat") is None or not gates:
+        return ""
+    best, best_m = "", None
+    for gate in gates:
+        metres = haversine_nm(poi["lat"], poi["lon"],
+                              gate["lat"], gate["lon"]) * 1852.0
+        if best_m is None or metres < best_m:
+            best, best_m = gate["ref"], metres
+    return best if best_m is not None and best_m <= GATE_REACH_M else ""
+
+
 def _ring(element):
     geom = element.get("geometry")
     if geom:
@@ -3397,10 +3422,22 @@ def fetch_amenities(rec, refresh=False):
         return cached_or_error(exc)
 
     rings = []
+    site = {}
     for el in field.get("elements", []):
         ring = _ring(el)
         if len(ring) >= 4 and in_any(lon, lat, [ring]):
             rings.append(ring)
+            # The aerodrome polygon carries the airport's own details and we
+            # were reading only its shape. The website is the one thing on this
+            # page that answers what the map cannot: gate assignments, rideshare
+            # pickup, today's construction.
+            tags = el.get("tags", {})
+            site = site or {
+                "website": safe_url(tags.get("website")
+                                    or tags.get("contact:website") or ""),
+                "wikipedia": tags.get("wikipedia", ""),
+                "phone": tags.get("phone") or tags.get("contact:phone", ""),
+            }
     if not rings:  # unmapped aerodrome - fall back to a plain radius
         rings = []
         bbox = (lat - 0.025, lon - 0.030, lat + 0.025, lon + 0.030)
@@ -3416,27 +3453,57 @@ def fetch_amenities(rec, refresh=False):
 
     terminals = []
     pois = []
+    gates = []
     for el in data.get("elements", []):
         tags = el.get("tags", {})
+        # Gates are not places to go; they are how everywhere else is described.
+        # "Concourse A" is a hundred metres of corridor - "at gate A2" is where
+        # the coffee actually is.
+        if tags.get("aeroway") == "gate":
+            glat = el.get("lat") or (el.get("center") or {}).get("lat")
+            glon = el.get("lon") or (el.get("center") or {}).get("lon")
+            if glat is not None and tags.get("ref"):
+                gates.append({"ref": tags["ref"], "lat": glat, "lon": glon})
+            continue
         if tags.get("aeroway") == "terminal" or tags.get("building") == "terminal":
             ring = _ring(el)
             if len(ring) >= 4 and tags.get("name"):
                 terminals.append({"name": tags["name"], "ring": ring})
             continue
-        if "amenity" not in tags and "shop" not in tags and tags.get("aeroway") != "lounge":
+        if ("amenity" not in tags and "shop" not in tags
+                and "railway" not in tags and tags.get("aeroway") != "lounge"):
             continue
         plat = el.get("lat") or (el.get("center") or {}).get("lat")
         plon = el.get("lon") or (el.get("center") or {}).get("lon")
         if plat is None or plon is None:
             continue
-        if rings and not in_any(plon, plat, rings):
+        inside = not rings or in_any(plon, plat, rings)
+        away = haversine_nm(lat, lon, plat, plon) * 1852.0
+        kind = _transport_kind({"amenity": tags.get("amenity", ""),
+                                "shop": tags.get("shop", ""),
+                                "office": tags.get("office", ""),
+                                "railway": tags.get("railway", ""),
+                                "station": tags.get("station", ""),
+                                "network": tags.get("network", ""),
+                                "name": tags.get("name", ""),
+                                "on_field": inside})
+        # One reach for everything: which of these actually serves the airport
+        # is decided when the page is built, where the names, the networks and
+        # the route relations are all in hand. Fetching narrowly threw away
+        # Miami's Metrorail station and Newark's railway station, and no amount
+        # of reading can recover what was never asked for.
+        if not inside and not (kind and away <= TRANSPORT_REACH_M):
             continue  # inside the bbox but off the airport
+        if (kind and not tags.get("name")
+                and kind not in ("taxi", "rail", "car_rental")):
+            continue  # an unnamed shuttle stop is not a way out anybody can use
         pois.append({
             "id": "%s/%s" % (el["type"], el["id"]),
             "name": tags.get("name") or tags.get("operator") or "(unnamed)",
             "kind": classify(tags),
             "amenity": tags.get("amenity", ""),
             "shop": tags.get("shop", ""),
+            "office": tags.get("office", ""),
             "cuisine": tags.get("cuisine", ""),
             "operator": tags.get("operator", ""),
             "brand": tags.get("brand", ""),
@@ -4614,6 +4681,10 @@ def cmd_amenities(args):
         # field nobody has mapped.
         print(json.dumps({"airport": rec, "terminals": data.get("terminals", []),
                           "pois": pois, "warning": warn,
+                          # The airport's own details, which ride on the same
+                          # aerodrome polygon the amenities are clipped to.
+                          "website": data.get("website", ""),
+                          "wikipedia": data.get("wikipedia", ""),
                           "error": data.get("error"),
                           "stale": bool(data.get("stale")),
                           "fetched": data.get("fetched"),

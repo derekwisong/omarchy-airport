@@ -48,12 +48,12 @@ conditions and the links out — stays put on every page.
 | **Summary** | Runway, tower and hours, airspace, fuel, attended hours, landing fee, sectional and centre, a forecast band, and Advisories — FAA delay programs and flight restrictions within 50 nm |
 | **Weather** | Category, present weather in words, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, how old the observation is, a forecast timeline, raw METAR and TAF |
 | **Traffic** | What ADS-B hears nearby right now — arriving, departing, on the ground, passing over — as a plan-view scope centred on the field, or as a table, at 5, 10, 25, 50 or 100 nm, over the NWS reflectivity mosaic |
-| **Amenities** | Food, shops and lounges by concourse, filterable, each linking to Google Maps |
+| **Amenities** | Food, shops and lounges by concourse, filterable, with the gate each is at and whether it is step-free or has wi-fi, each linking to Google Maps |
 | **Ground** | How you leave: rail with the lines that call and where they run, the airport's own people mover stop by stop, buses, taxi ranks, car rental, ferries and bike share — each with the walk from the terminal |
 | **Runways** | Which runway the wind favours, then every runway per end: head and crosswind components, lengths, surface, lighting, magnetic and true alignment, ILS, VGSI, displaced thresholds, LDA, obstructions, pattern altitude |
 | **Procedures** | Approaches by runway, SIDs, STARs, ODPs, minimums, hot spots |
 | **Frequencies** | The ones you'd tune, with tower hours; approach and departure filed separately |
-| **Services** | Attended hours, parking, customs, manager, owner, FBOs with fuel prices |
+| **Services** | The airport's own website, attended hours, parking, customs, repairs, oxygen, beacon, wind indicator, manager, owner, FBOs with fuel prices |
 | **Notes** | Your markdown, edited in your editor, live on save |
 
 `i` inverts a chart for night use.
@@ -74,6 +74,7 @@ conditions and the links out — stays put on every page.
 | `Tab` | On Amenities, walk the concourse filter; on Traffic, switch scope / table |
 | `[` `]` | On Traffic, step the range |
 | `Ctrl+W` | On Traffic, weather radar under the scope |
+| `Ctrl+O` | Open the airport's own website |
 | `Esc` | Back out of a chart, then close |
 
 ## The cache

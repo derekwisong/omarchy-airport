@@ -568,6 +568,31 @@ Item {
 
   // FAA charts open here; everything else is somebody else's website and
   // belongs in a browser.
+  // The airport's own website, which OpenStreetMap carries on the aerodrome
+  // itself. It arrives with the ground data, which only some pages fetch - so
+  // the key asks for that fetch when it has to, and opens the site when it
+  // lands rather than doing nothing and looking broken.
+  readonly property string airportSite:
+    (root.amenities && root.amenities.website) || ""
+  property bool openSiteWhenKnown: false
+
+  function openAirportSite() {
+    if (root.airportSite !== "") {
+      root.openLink(root.airportSite)
+      return
+    }
+    if (!root.currentIdent) return
+    root.openSiteWhenKnown = true
+    ensureGroundData()
+  }
+
+  onAirportSiteChanged: {
+    if (root.openSiteWhenKnown && root.airportSite !== "") {
+      root.openSiteWhenKnown = false
+      root.openLink(root.airportSite)
+    }
+  }
+
   function openLink(url) {
     if (!url) return
     var text = String(url)
@@ -1062,6 +1087,11 @@ Item {
                            && (event.key === Qt.Key_BracketLeft
                                || event.key === Qt.Key_BracketRight)) {
                   root.stepTrafficRange(event.key === Qt.Key_BracketRight ? 1 : -1)
+                  event.accepted = true
+                  // The airport's own site, from anywhere in the panel.
+                } else if (event.key === Qt.Key_O
+                           && (event.modifiers & Qt.ControlModifier)) {
+                  root.openAirportSite()
                   event.accepted = true
                   // The weather layer under the scope. Ctrl for the same
                   // reason as the retry below: a bare letter belongs to the
@@ -2891,8 +2921,18 @@ Item {
                       foreground: Color.menu.text
                     }
                     PanelSectionHeader {
-                      width: body.width * 0.24
+                      width: body.width * 0.19
                       text: "TYPE"
+                      foreground: Color.menu.text
+                    }
+                    PanelSectionHeader {
+                      width: body.width * 0.09
+                      text: "GATE"
+                      foreground: Color.menu.text
+                    }
+                    PanelSectionHeader {
+                      width: body.width * 0.16
+                      text: "ACCESS"
                       foreground: Color.menu.text
                     }
                     PanelSectionHeader {
@@ -2962,13 +3002,33 @@ Item {
                             onLinkActivated: function (link) { root.openLink(link) }
                           }
                           Text {
-                            width: body.width * 0.24
+                            width: body.width * 0.19
                             elide: Text.ElideRight
                             textFormat: Text.PlainText
                             text: modelData.type
                             color: Color.muted
                             font.family: Style.font.family
                             font.pixelSize: Style.font.bodySmall
+                          }
+                          // Where it is, in the only terms anybody standing in
+                          // a terminal navigates by.
+                          Text {
+                            width: body.width * 0.09
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                            text: modelData.gate
+                            color: Color.muted
+                            font.family: "monospace"
+                            font.pixelSize: Style.font.caption
+                          }
+                          Text {
+                            width: body.width * 0.16
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                            text: modelData.flags
+                            color: Color.muted
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.caption
                           }
                           Text {
                             elide: Text.ElideRight
@@ -3310,6 +3370,60 @@ Item {
                   visible: root.tab === 8
                   width: parent.width
                   spacing: Style.space(4)
+
+                  // The airport's own site, which is where the things no data
+                  // set carries live: today's construction, where the rideshare
+                  // pickup moved to, which gate an airline uses.
+                  Row {
+                    visible: root.airportSite !== ""
+                    width: parent.width
+                    spacing: Style.space(10)
+
+                    Text {
+                      width: Style.space(126)
+                      textFormat: Text.PlainText
+                      text: "Website"
+                      color: Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                    }
+                    Text {
+                      id: siteLink
+                      width: parent.width - Style.space(136)
+                      elide: Text.ElideRight
+                      textFormat: Text.RichText
+                      text: "<a href='" + Model.safeUrl(root.airportSite)
+                        + "' style='color:" + Color.accent + "'>"
+                        + Model.escapeHtml(root.airportSite.replace(/^https?:\/\//, "")
+                                           .replace(/\/$/, ""))
+                        + "</a>   <span style='color:" + Color.muted
+                        + "'>Ctrl+O</span>"
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+
+                      // Inside the body Flickable, which takes the press first,
+                      // so the click is handled here and only over the link.
+                      MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: siteLink.linkAt(mouseX, mouseY)
+                          ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onPressed: function (mouse) {
+                          mouse.accepted = !!siteLink.linkAt(mouse.x, mouse.y)
+                        }
+                        onClicked: function (mouse) {
+                          var link = siteLink.linkAt(mouse.x, mouse.y)
+                          if (link) root.openLink(link)
+                        }
+                      }
+                    }
+                  }
+
+                  Item {
+                    width: 1
+                    height: Style.space(4)
+                    visible: root.airportSite !== ""
+                  }
 
                   Repeater {
                     model: Model.groundRows(root.ground)

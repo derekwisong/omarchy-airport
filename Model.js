@@ -182,6 +182,20 @@ function terminalChips(a) {
 
 // Grouped, filtered amenity rows as structured columns, so the page can lay
 // them out as a table rather than one long pre-formatted string.
+// Only what the map actually says. "wheelchair=limited" is not "step-free",
+// and an untagged place is not a place with stairs - it is a place nobody has
+// said either way about, so it says nothing.
+function accessFlags(poi) {
+  var out = []
+  if (poi.wheelchair === "yes") out.push("step-free")
+  else if (poi.wheelchair === "limited") out.push("step-free in part")
+  if (poi.internet === "wlan" || poi.internet === "yes"
+      || poi.internet === "free" || poi.internet === "wired")
+    out.push("wi-fi")
+  return out.join("  ·  ")
+}
+
+
 function amenityRows(a, terminal) {
   if (!a || !a.pois || !a.pois.length) return []
   var groups = {}, order = []
@@ -220,6 +234,13 @@ function amenityRows(a, terminal) {
         hours: poi.hours || "",
         kind: poi.kind,
         level: poi.level || "",
+        // "Concourse A" is a hundred metres of corridor; the gate is where the
+        // place actually is, and it is the only address anybody in a terminal
+        // navigates by.
+        gate: poi.gate ? "gate " + poi.gate : "",
+        // What a traveller plans around: getting in without stairs, and
+        // whether there is wi-fi while they wait.
+        flags: accessFlags(poi),
         url: mapsUrl(poi),
         osm: osmUrl(poi),
         website: poi.website || ""
