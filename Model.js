@@ -38,7 +38,11 @@ function runwayRows(data, weather) {
     var ends = r.ends || []
     for (var j = 0; j < ends.length; j++) {
       var e = ends[j], tags = []
-      if (e.true_align) tags.push(e.true_align + "°T")
+      // Magnetic first, because that is what the runway is numbered for and
+      // what the heading bug reads; true after it, because the wind sums and
+      // the chart's north are true.
+      if (e.mag_align) tags.push(e.mag_align + "°M (" + e.true_align + "°T)")
+      else if (e.true_align) tags.push(e.true_align + "°T")
       if (e.ils) tags.push(e.ils)
       if (e.approach_lights) tags.push(e.approach_lights)
       if (e.vgsi && e.vgsi !== "none") tags.push(e.vgsi)
@@ -138,6 +142,12 @@ function groundRows(g) {
   add("Transient parking", parking.join(", "))
   add("Customs", g.customs ? "available" : "")
   add("Services", (g.services || []).join(", "))
+  // What the field can do for the aeroplane, and how you find it after dark.
+  // All of it published by the FAA and none of it shown until now.
+  add("Repairs", g.repairs)
+  add("Oxygen", g.oxygen)
+  add("Beacon", g.beacon)
+  add("Wind indicator", g.wind_indicator)
   var contacts = g.contacts || []
   for (var i = 0; i < contacts.length && i < 3; i++) {
     var c = contacts[i]
@@ -404,6 +414,12 @@ function summaryRows(s, header) {
                + "procedures and services are unavailable here.")
   add("Attended", (s.attended || []).join(" · "))
   add("Landing fee", s.landing_fee === "Y" ? "Yes" : (s.landing_fee === "N" ? "No" : ""))
+  // Which chart this field is on and who owns the airspace above it - both in
+  // the FAA record all along, neither ever shown.
+  if (us) {
+    add("Sectional", s.sectional)
+    add("Center", s.artcc ? s.artcc + " ARTCC" : "")
+  }
   return rows
 }
 
@@ -1326,6 +1342,14 @@ function favouredEnd(runwayData, weather) {
   // A runway with the wind behind it is not favoured, it is merely least bad.
   return (best && best.head > 0) ? best : null
 }
+
+// The one number that turns every true bearing on this page into the one you
+// fly. Said once, above the table, rather than repeated on every end.
+function variationLine(summary) {
+  var value = summary ? summary.variation : ""
+  return value ? "Magnetic variation " + value : ""
+}
+
 
 function favouredLine(runwayData, weather) {
   var best = favouredEnd(runwayData, weather)

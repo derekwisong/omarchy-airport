@@ -20,6 +20,16 @@
 
 ### Changed
 
+- **Runway alignment in magnetic, as the runway is numbered.** NASR publishes
+  true bearings and the magnetic variation beside them, and the page was
+  showing the true one - which is why runway 06 read as 051°T and looked wrong
+  to anybody holding a compass. Both are shown now, magnetic first, with the
+  field's variation stated once above the table.
+- **What the FAA record has always said and the panel never showed:** the
+  sectional chart and the centre above you on Summary; airframe and engine
+  repairs, bottled and bulk oxygen, the beacon's hours and whether the wind
+  indicator is lit, on Services.
+
 - **Present weather, which the panel was dropping entirely.** A METAR codes
   what the sky is *doing* separately from what it looks like, and the plugin
   read the cloud layers, the temperature and the wind while saying nothing at

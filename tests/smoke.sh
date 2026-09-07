@@ -386,6 +386,7 @@ fi
 # Live hazard and daylight context on the panel payload.
 check "tfr in payload"      '"tfr"'            $APT panel KPOU --no-record
 check "observation is timed and aged" "min ago"  $APT wx KATL
+check "magnetic runway alignment" "°M ("      $APT runways KPOU
 check "twilight in weather" "twilight"         $APT panel KPOU --no-record
 
 # Never assert a negative from missing data: outside FAA coverage the plugin

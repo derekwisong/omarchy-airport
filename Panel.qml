@@ -3032,10 +3032,21 @@ Item {
                     font.bold: true
                   }
 
+                  Text {
+                    visible: !!text
+                    width: parent.width
+                    textFormat: Text.PlainText
+                    text: Model.variationLine(root.summary)
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+
                   Item {
                     width: 1
                     height: Style.space(8)
                     visible: Model.favouredLine(root.runwayData, root.weather) !== ""
+                      || Model.variationLine(root.summary) !== ""
                   }
 
                   // The table had no labels at all: "6,549' × 150'" and "150°T"

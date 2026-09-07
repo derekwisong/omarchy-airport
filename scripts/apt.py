@@ -1217,6 +1217,116 @@ def decode_surface(code):
     return base
 
 
+def magnetic_variation(rec):
+    """Degrees to subtract from a true heading to get a magnetic one.
+
+    NASR writes it as a number and a hemisphere - "12" and "W" at Poughkeepsie.
+    West variation means magnetic reads higher than true, so it is added; east
+    is taken off. Returns None where the record does not say."""
+    faa = (rec["faa"] or {}) if rec is not None else {}
+    try:
+        degrees = float(str(faa.get("MAG_VARN", "")).strip() or "nan")
+    except ValueError:
+        return None
+    if degrees != degrees:                       # NaN: nothing to work with
+        return None
+    hemisphere = str(faa.get("MAG_HEMIS", "")).strip().upper()
+    if hemisphere == "W":
+        return degrees
+    if hemisphere == "E":
+        return -degrees
+    return None
+
+
+def magnetic_from_true(true_align, variation):
+    """A true bearing as a magnetic one, to the degree, or "" if unknown."""
+    if variation is None:
+        return ""
+    try:
+        true_deg = float(str(true_align).strip() or "nan")
+    except ValueError:
+        return ""
+    if true_deg != true_deg:
+        return ""
+    return "%03d" % (round(true_deg + variation) % 360 or 360)
+
+
+# NASR writes these as codes; a page needs them as English.
+REPAIR_LEVEL = {"MAJOR": "major", "MINOR": "minor", "NONE": ""}
+OXYGEN_TYPE = {"HIGH": "high pressure", "LOW": "low pressure",
+               "HIGH/LOW": "high and low pressure", "NONE": ""}
+BEACON_COLOUR = {"CG": "white and green", "CY": "white and yellow",
+                 "CB": "white and amber", "SCG": "split white and green",
+                 "C": "white", "G": "green", "Y": "yellow"}
+
+
+def magnetic_variation_text(rec):
+    """"12°W", the way a chart writes it."""
+    faa = (rec["faa"] or {}) if rec is not None else {}
+    degrees = str(faa.get("MAG_VARN", "")).strip()
+    hemisphere = str(faa.get("MAG_HEMIS", "")).strip().upper()
+    if not degrees or hemisphere not in ("E", "W"):
+        return ""
+    return "%s°%s" % (degrees, hemisphere)
+
+
+def repair_text(faa):
+    """What can be fixed here, airframe and engine."""
+    parts = []
+    for field, what in (("AIRFRAME_REPAIR_SER_CODE", "airframe"),
+                        ("PWR_PLANT_REPAIR_SER", "engine")):
+        level = REPAIR_LEVEL.get(str(faa.get(field, "")).strip().upper(), "")
+        if level:
+            parts.append("%s %s" % (what, level))
+    return ", ".join(parts)
+
+
+def oxygen_text(faa):
+    """Bottled and bulk oxygen, where either is to be had."""
+    parts = []
+    for field, what in (("BOTTLED_OXY_TYPE", "bottled"),
+                        ("BULK_OXY_TYPE", "bulk")):
+        kind = OXYGEN_TYPE.get(str(faa.get(field, "")).strip().upper(), "")
+        if kind:
+            parts.append("%s, %s" % (what, kind))
+    return "; ".join(parts)
+
+
+def beacon_text(faa):
+    """The beacon's colours and hours - how the field is found after dark."""
+    colour = BEACON_COLOUR.get(str(faa.get("BCN_LENS_COLOR", "")).strip().upper(), "")
+    hours = decode_light_schedule(faa.get("BCN_LGT_SKED", ""))
+    if colour and hours:
+        return "%s, %s" % (colour, hours)
+    return colour or hours
+
+
+def decode_light_schedule(value):
+    """NASR's lighting shorthand: "SS-SR" is sunset to sunrise."""
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    if text in ("SS-SR", "SS-SR."):
+        return "sunset to sunrise"
+    if text == "DUSK-DAWN":
+        return "dusk to dawn"
+    if text.startswith("SEE RMK"):
+        return "see remarks"
+    return text.lower()
+
+
+def wind_indicator_text(faa):
+    """A wind sock, and whether it is lit."""
+    flag = str(faa.get("WIND_INDCR_FLAG", "")).strip().upper()
+    if flag.startswith("Y-L"):
+        return "lighted"
+    if flag.startswith("Y"):
+        return "yes"
+    if flag.startswith("N"):
+        return "none"
+    return ""
+
+
 def decode_vgsi(code):
     if not code:
         return ""
@@ -1313,6 +1423,7 @@ def get_runways(conn, rec):
         return out
 
     fid = rec["id"]
+    variation = magnetic_variation(rec)
     ends_by_rwy = {}
     for r in conn.execute("SELECT * FROM rwy_end WHERE arpt_id=?", (fid,)).fetchall():
         ends_by_rwy.setdefault(r["rwy_id"], []).append(
@@ -1326,6 +1437,12 @@ def get_runways(conn, rec):
             ends.append({
                 "id": e.get("RWY_END_ID", ""),
                 "true_align": e.get("TRUE_ALIGNMENT", ""),
+                # A runway is numbered for its magnetic heading, and NASR gives
+                # the true one - which is why 09 reads as 087°T and looks wrong
+                # to anybody holding a compass. The variation is in the same
+                # record and was going unread.
+                "mag_align": magnetic_from_true(e.get("TRUE_ALIGNMENT", ""),
+                                                variation),
                 "ils": e.get("ILS_TYPE", ""),
                 "vgsi": decode_vgsi(e.get("VGSI_CODE", "")),
                 "approach_lights": e.get("APCH_LGT_SYSTEM_CODE", ""),
@@ -4071,7 +4188,9 @@ def cmd_runways(args):
                 ", PCN %s" % rwy["pcn"] if rwy.get("pcn") else ""))
         for end in rwy.get("ends", []):
             parts = []
-            if end.get("true_align"):
+            if end.get("mag_align"):
+                parts.append("%s°M (%s°T)" % (end["mag_align"], end["true_align"]))
+            elif end.get("true_align"):
                 parts.append("%s°T" % end["true_align"])
             if end.get("lda"):
                 parts.append("LDA %s" % fmt_ft(end["lda"]))
@@ -5985,6 +6104,7 @@ def cmd_panel(args):
 
     density = weather.get("density_alt")
 
+    variation = magnetic_variation(rec)
     where = ", ".join(x for x in (title_case(rec["city"]), rec["state"]) if x)
     if faa.get("DIST_CITY_TO_AIRPORT") and faa.get("DIRECTION_CODE"):
         where += "  ·  %s mi %s" % (faa["DIST_CITY_TO_AIRPORT"], faa["DIRECTION_CODE"])
@@ -6024,6 +6144,10 @@ def cmd_panel(args):
             "landing_fee": faa.get("LNDG_FEE_FLAG", ""),
             "attended": attended,
             "weather": weather.get("summary", ""),
+            # Where you are, in the terms the charts use.
+            "sectional": title_case(faa.get("CHART_NAME", "")),
+            "artcc": title_case(faa.get("ARTCC_NAME", "")),
+            "variation": magnetic_variation_text(rec),
         },
         "weather": weather,
         "tfr": (tfrs_near(rec) if not args.no_live
@@ -6052,6 +6176,14 @@ def cmd_panel(args):
             "customs": faa.get("CUST_FLAG", "") == "Y",
             "services": [OTHER_SERVICES.get(x, x.lower())
                          for x in (faa.get("OTHER_SERVICES") or "").split(",") if x],
+            # Repairs, oxygen, the beacon and the wind indicator: all in the
+            # record already, none of it ever shown. A field with a beacon that
+            # runs sunset to sunrise and a lighted wind sock is a field you can
+            # find at night, which is the whole reason to say so.
+            "repairs": repair_text(faa),
+            "oxygen": oxygen_text(faa),
+            "beacon": beacon_text(faa),
+            "wind_indicator": wind_indicator_text(faa),
             "contacts": [{**c, "name": title_case(c["name"]),
                           "title": title_case(c["title"])}
                          for c in get_contacts(conn, rec)],
