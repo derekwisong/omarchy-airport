@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Changed
+
+- **Traffic opens on the scope, at 10 nm.** The map was behind a keypress and
+  the range started at 25, which draws the field as a smudge. It now opens on
+  the picture, close enough in to see which runway everything is using, and
+  `Tab` moves to the table. 5 nm joins the range steps below 10, for when the
+  question is which taxiway.
+- **The note under the traffic list is a credit, not an essay.** It said the
+  same thing about receiver coverage every time you looked at it. It now names
+  the feed and links to it, and only adds a caveat in the case that needs one -
+  a feed that answered with nothing, where the empty list is worth explaining.
+
 ### Fixed
 
 - **Traffic was crediting this airport with its neighbours' movements.** Phase

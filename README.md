@@ -47,7 +47,7 @@ conditions and the links out — stays put on every page.
 |---|---|
 | **Summary** | Runway, tower and hours, airspace, fuel, attended hours, landing fee, a forecast band, and Advisories — FAA delay programs and flight restrictions within 50 nm |
 | **Weather** | Category, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, a forecast timeline, raw METAR and TAF |
-| **Traffic** | What ADS-B hears nearby right now — arriving, departing, on the ground, passing over — as a table or a plan-view scope centred on the field, at 10, 25, 50 or 100 nm |
+| **Traffic** | What ADS-B hears nearby right now — arriving, departing, on the ground, passing over — as a plan-view scope centred on the field, or as a table, at 5, 10, 25, 50 or 100 nm |
 | **Amenities** | Food, shops and lounges by concourse, filterable, each linking to Google Maps |
 | **Runways** | Which runway the wind favours, then every runway per end: lengths, surface, lighting, alignment, ILS, VGSI, displaced thresholds, LDA, obstructions, pattern altitude |
 | **Procedures** | Approaches by runway, SIDs, STARs, ODPs, minimums, hot spots |
@@ -70,7 +70,7 @@ conditions and the links out — stays put on every page.
 | `Shift+Del` | Forget a recent |
 | `PgUp` `PgDn`, `Ctrl+↑` `Ctrl+↓` | Scroll |
 | `Ctrl+Home` `Ctrl+End` | Top / bottom |
-| `Tab` | On Amenities, walk the concourse filter; on Traffic, switch table / map |
+| `Tab` | On Amenities, walk the concourse filter; on Traffic, switch scope / table |
 | `[` `]` | On Traffic, step the range |
 | `Esc` | Back out of a chart, then close |
 

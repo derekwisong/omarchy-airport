@@ -5,7 +5,7 @@ const fs = require("fs");
 const src = fs.readFileSync(__dirname + "/../Model.js", "utf8")
   .split("\n").filter(l => !l.trim().startsWith(".pragma")).join("\n");
 const m = {};
-new Function("e", src + "; e.paintScope = paintScope; e.scopeRings = scopeRings;")(m);
+new Function("e", src + "; e.paintScope = paintScope; e.scopeRings = scopeRings; e.trafficNote = trafficNote;")(m);
 
 let failed = 0;
 function check(name, got, want) {
@@ -84,6 +84,16 @@ check("a runway without coordinates is skipped", noCoords.n, 0);
 
 check("rings for an odd range", m.scopeRings(37).join(","), "19,37");
 check("rings for a preset range", m.scopeRings(50).join(","), "10,25,50");
+check("rings for the tightest range", m.scopeRings(5).join(","), "1,2,5");
+
+// The note under the traffic list carries a link to the feed it came from,
+// and says nothing about the sky beyond what the feed reported.
+const note = m.trafficNote({ available: true, seen: 3, radius_nm: 10,
+                             attribution: "adsb.lol contributors, ODbL" }, "#0a0");
+check("the note links the source", /href='https:\/\/adsb\.lol'/.test(note), true);
+check("the note credits ODbL", />adsb\.lol<\/a> contributors, ODbL/.test(note), true);
+check("an unreachable feed claims nothing",
+      /did not answer/.test(m.trafficNote({ available: false }, "#0a0")), true);
 
 if (failed) process.exit(1);
 console.log("scope ok");

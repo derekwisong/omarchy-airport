@@ -4066,6 +4066,7 @@ def taf_group_summary(group):
 
 ADSB_URL = "https://api.adsb.lol/v2/point/%.5f/%.5f/%d"
 ADSB_ATTRIB = "adsb.lol contributors, ODbL"
+ADSB_SITE_URL = "https://adsb.lol"
 TRAFFIC_CACHE = CACHE_DIR / "traffic.json"
 TRAFFIC_TTL = 15
 TRAFFIC_RADIUS_NM = 25
@@ -4242,6 +4243,7 @@ def fetch_traffic(rec, radius_nm=TRAFFIC_RADIUS_NM, refresh=False):
               "center": {"lat": rec["lat"], "lon": rec["lon"],
                          "ident": display_id(rec)},
               "radius_nm": radius, "attribution": ADSB_ATTRIB,
+              "attribution_url": ADSB_SITE_URL,
               "updated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -4703,9 +4705,7 @@ def cmd_traffic(args):
     print("\n%d aircraft seen within %d nm (%s)."
           % (result["seen"], result["radius_nm"],
              ", ".join("%d %s" % (n, k) for k, n in sorted(counts.items())) or "none"))
-    print("Traffic data (c) %s. ADS-B is what receivers heard, not everything "
-          "flying: an aircraft without ADS-B out, or below the horizon of every "
-          "nearby receiver, does not appear." % ADSB_ATTRIB)
+    print("ADS-B traffic from %s (%s)." % (ADSB_SITE_URL, ADSB_ATTRIB))
 
 
 def live_weather(rec, offline=False):

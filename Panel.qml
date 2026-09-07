@@ -63,11 +63,16 @@ Item {
   onAmenitiesLoadingChanged: root.amenitiesWaited = 0
   property var traffic: null
   property bool trafficLoading: false
-  // Table or scope, and how far out. One range for both views, so switching
+  // Scope or table, and how far out. One range for both views, so switching
   // between them never quietly changes what you are looking at.
-  property bool trafficMap: false
-  property int trafficRange: 25
-  readonly property var trafficRanges: [10, 25, 50, 100]
+  //
+  // The scope opens first - it is the view that answers "what is around me"
+  // at a glance - and Tab moves to the table. 10 nm by default, close enough
+  // in that the runway layout is readable and the pattern is not one blob;
+  // 5 nm is there for when it still is not close enough.
+  property bool trafficMap: true
+  property int trafficRange: 10
+  readonly property var trafficRanges: [5, 10, 25, 50, 100]
 
   // Cache state. The engine keeps one 28-day FAA cycle in SQLite; the first
   // run has to fetch it, and every 28 days it has to fetch it again. Rather
@@ -382,7 +387,7 @@ Item {
   function stepTrafficRange(delta) {
     var ranges = root.trafficRanges
     var at = ranges.indexOf(root.trafficRange)
-    if (at < 0) at = 1
+    if (at < 0) at = ranges.indexOf(10)
     var next = Math.max(0, Math.min(ranges.length - 1, at + delta))
     if (ranges[next] === root.trafficRange) return
     root.trafficRange = ranges[next]
@@ -1961,12 +1966,15 @@ Item {
                   // View switch and range, clickable as well as keyed, so
                   // neither is a secret. Tab flips the view, [ and ] step the
                   // range - both said out loud in the row itself.
+                  //
+                  // The scope is what opens; Tab is how you get to the table.
                   Row {
                     width: parent.width
                     spacing: Style.space(6)
 
                     Repeater {
-                      model: [{ label: "Table", map: false }, { label: "Map", map: true }]
+                      // Scope first, because that is what opens.
+                      model: [{ label: "Scope", map: true }, { label: "Table", map: false }]
                       delegate: Rectangle {
                         required property var modelData
                         radius: Style.cornerRadius
@@ -2142,14 +2150,35 @@ Item {
                   // Always shown, including when the list is empty, because
                   // "nothing was heard" is the part that needs explaining.
                   Text {
-                    visible: !!Model.trafficNote(root.traffic)
+                    id: trafficNote
+                    visible: !!text
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    textFormat: Text.PlainText
-                    text: Model.trafficNote(root.traffic)
+                    // Rich text for the source link only; every part of it is
+                    // escaped in Model.trafficNote.
+                    textFormat: Text.RichText
+                    text: Model.trafficNote(root.traffic, String(Color.accent))
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
+
+                    // Same reason as the status rows: this sits inside the
+                    // body Flickable, which takes the press before the Text
+                    // sees it. The press is accepted only over the link, so
+                    // anywhere else in the line still scrolls the page.
+                    MouseArea {
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: trafficNote.linkAt(mouseX, mouseY)
+                        ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      onPressed: function (mouse) {
+                        mouse.accepted = !!trafficNote.linkAt(mouse.x, mouse.y)
+                      }
+                      onClicked: function (mouse) {
+                        var link = trafficNote.linkAt(mouse.x, mouse.y)
+                        if (link) root.openLink(link)
+                      }
+                    }
                   }
 
                   Item { width: 1; height: Style.space(10) }

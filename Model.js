@@ -459,8 +459,8 @@ function trafficGroups(traffic) {
 
 // Range rings for the scope: a couple of intermediate marks plus the radius
 // actually asked for, which is always the last and is drawn solid.
-var SCOPE_RINGS = { 10: [2, 5, 10], 25: [5, 10, 25], 50: [10, 25, 50],
-                    100: [25, 50, 100] }
+var SCOPE_RINGS = { 5: [1, 2, 5], 10: [2, 5, 10], 25: [5, 10, 25],
+                    50: [10, 25, 50], 100: [25, 50, 100] }
 
 // The scope, drawn onto a 2D context.
 //
@@ -649,19 +649,29 @@ function commas(n) {
 }
 
 
-// What the list above is and is not, said once under it.
-function trafficNote(traffic) {
+// One line under the list: where the traffic came from, and - when the feed
+// answered with nothing - that nothing heard is not the same as nothing there.
+//
+// Rich text, because the source is a link. Everything interpolated is escaped
+// and the URL goes through the same http(s) gate as any other link here.
+var ADSB_SITE_URL = "https://adsb.lol"
+
+function trafficNote(traffic, tint) {
   if (!traffic) return ""
+  // The credit is the feed's own line - "adsb.lol contributors, ODbL" - and
+  // the name at the front of it is the link, so the source is named once
+  // rather than twice.
+  var credit = String(traffic.attribution || "adsb.lol contributors, ODbL")
+  var url = safeUrl(traffic.attribution_url) || ADSB_SITE_URL
+  var cut = credit.indexOf(" ")
+  var source = "ADS-B traffic ©" + advisoryLink(url, credit.substr(0, cut < 0 ? credit.length : cut), tint)
+    + (cut < 0 ? "" : escapeHtml(credit.substr(cut)))
   if (!traffic.available)
-    return "Could not reach the traffic feed. This says nothing about the sky - "
-      + "only that the report did not arrive."
-  var n = traffic.seen || 0
-  if (!n)
-    return "Nothing seen within " + (traffic.radius_nm || 25) + " nm. Coverage is "
-      + "volunteer receivers, so this is not the same as an empty sky."
-  return n + " aircraft seen within " + (traffic.radius_nm || 25) + " nm. ADS-B is "
-    + "what receivers heard: anything without ADS-B out, or below their horizon, "
-    + "is not here. © " + (traffic.attribution || "adsb.lol contributors, ODbL")
+    return "The traffic feed did not answer. · " + source
+  if (!(traffic.seen || 0))
+    return "Nothing heard within " + (traffic.radius_nm || 25)
+      + " nm, which is not the same as nothing there. · " + source
+  return source
 }
 
 
