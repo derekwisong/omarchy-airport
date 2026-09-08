@@ -5,12 +5,12 @@
 // Merge into ~/.config/omarchy/extensions/omarchy-menu.jsonc, which
 // hot-reloads on save. Then it is reachable three ways:
 //   SUPER + SPACE, then type "airport"
-//   omarchy menu summon trigger.airports
+//   omarchy menu summon trigger.airport
 //   omarchy menu summon metar        (via the aliases below)
 {
-  "trigger.airports": {
+  "trigger.airport": {
     "icon": "󰀝",
-    "label": "Airports",
+    "label": "Airport",
     "aliases": ["airport", "airports", "metar", "wx"],
     "description": "Look up any airport - runways, frequencies, weather, procedures",
     "action": "omarchy-shell shell toggle derekwisong.airport"

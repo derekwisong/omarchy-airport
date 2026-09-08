@@ -26,7 +26,7 @@ and nothing else changes.
 
 ```lua
 -- ~/.config/hypr/bindings.lua
-o.bind("SUPER + <key>", "Airports", "omarchy-shell shell toggle derekwisong.airport")
+o.bind("SUPER + <key>", "Airport", "omarchy-shell shell toggle derekwisong.airport")
 ```
 
 The plugin writes nothing to your config.
