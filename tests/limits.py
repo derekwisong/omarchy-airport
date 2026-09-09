@@ -225,11 +225,14 @@ check("a real chart path stays inside the cache",
 import os  # noqa: E402
 import tempfile  # noqa: E402
 
+# The writer only writes inside the plugin's own directories, so point those
+# at a scratch tree rather than the real cache.
 _d = pathlib.Path(tempfile.mkdtemp())
+apt.CACHE_DIR = _d / "cache"
 _victim = _d / "VICTIM"
 _victim.write_text("precious")
-_dst = _d / "cache" / "chart.pdf"
-_dst.parent.mkdir()
+_dst = apt.CACHE_DIR / "chart.pdf"
+_dst.parent.mkdir(parents=True)
 
 (_dst.parent / "chart.pdf.part").symlink_to(_victim)   # the old predictable name
 apt._write_private(_dst, b"%PDF-1.4 fresh")
@@ -252,6 +255,13 @@ apt._write_private(_dst, b"%PDF second")
 check("rewriting works", _dst.read_bytes(), b"%PDF second")
 check("and leaves no temporary of its own",
       [n for n in os.listdir(_dst.parent) if n.startswith(".chart.pdf.")], [])
+
+refuses("a path outside the plugin's own directories",
+        lambda: apt._write_private(_d / "loose.json", "x"), apt.Refused)
+_linked = apt.CACHE_DIR / "linkdir"
+_linked.symlink_to(_d)
+refuses("a directory that is a symlink",
+        lambda: apt._write_private(_linked / "x.json", "x"), apt.Refused)
 
 if fail:
     sys.exit(1)

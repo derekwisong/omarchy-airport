@@ -241,10 +241,22 @@ def _write_private(path, data):
     directory, so the path cannot be swapped underneath, and a destination that
     is not a regular file is refused rather than written through."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
     if isinstance(data, str):
         data = data.encode()
-    dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    # Only ever somewhere this plugin owns. Notes and recents can be pointed
+    # elsewhere by environment variable, so the list is what is configured now
+    # rather than the three defaults.
+    root = directory.resolve()
+    own = [CACHE_DIR, DATA_DIR, STATE_DIR, NOTES_DIR, RECENTS_PATH.parent]
+    if not any(root == d or d in root.parents for d in (x.resolve() for x in own)):
+        raise Refused("%s is outside the plugin's own directories" % directory)
+    try:
+        # O_NOFOLLOW: the directory itself may not be a symlink either.
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise Refused("%s is not a directory we can open: %s" % (directory, exc))
     try:
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise Refused("%s is not a regular file" % path)
@@ -259,7 +271,11 @@ def _write_private(path, data):
         finally:
             os.close(fd)
         try:
+            # rename never follows a symlink at the destination - it replaces
+            # the link itself - so the check above is a clearer error, not the
+            # thing keeping us safe.
             os.replace(tmp, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            os.fsync(dir_fd)   # the rename too, not just the bytes
         except OSError:
             os.unlink(tmp, dir_fd=dir_fd)
             raise

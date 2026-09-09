@@ -168,7 +168,7 @@ omarchy restart shell      # required to pick up QML changes
 remove it and `omarchy plugin add .` instead.
 
 ```bash
-./tests/smoke.sh              # 121 checks, network required
+./tests/smoke.sh              # ~120 checks, network required
 ./tests/smoke.sh --with-osm   # adds Overpass and AirNav
 python3 tests/limits.py       # download ceilings, hosts, redirects, zip bounds
 omarchy plugin validate .
