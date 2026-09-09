@@ -54,34 +54,34 @@ class Body:
 
 # Only https, and only to a source we actually use. The panel hands commands
 # whatever it was given, so this is the edge of the world.
-refuses("a host we do not use", lambda: apt.Http.get("https://example.com/x"), ValueError)
+refuses("a host we do not use", lambda: apt.Http.get("https://example.com/x"), apt.Refused)
 refuses("plain http to a real source",
-        lambda: apt.Http.get("http://aviationweather.gov/x"), ValueError)
+        lambda: apt.Http.get("http://aviationweather.gov/x"), apt.Refused)
 refuses("a host that merely ends in one of ours",
-        lambda: apt.Http.get("https://nfdc.faa.gov.evil.test/x"), ValueError)
+        lambda: apt.Http.get("https://nfdc.faa.gov.evil.test/x"), apt.Refused)
 # The host is the parsed hostname, so the usual ways of dressing up a URL to
 # read as one of ours do not work: credentials before the @ name the host that
 # follows them, and a real host in the path is still just a path.
 refuses("an allowed host in the credentials",
-        lambda: apt.Http.get("https://nfdc.faa.gov@evil.test/x"), ValueError)
+        lambda: apt.Http.get("https://nfdc.faa.gov@evil.test/x"), apt.Refused)
 refuses("an allowed host in the path",
-        lambda: apt.Http.get("https://evil.test/nfdc.faa.gov"), ValueError)
-refuses("a bare address", lambda: apt.Http.get("https://93.184.216.34/x"), ValueError)
+        lambda: apt.Http.get("https://evil.test/nfdc.faa.gov"), apt.Refused)
+refuses("a bare address", lambda: apt.Http.get("https://93.184.216.34/x"), apt.Refused)
 # Case is not part of a hostname, so this one has to be allowed.
 check("an allowed host shouted", apt._require_fetch_host("https://NFDC.FAA.GOV/x"), None)
 
 # Content-Length is checked before the body is allocated.
 refuses("declared over the ceiling",
         lambda: apt._read_capped(Body(10, declared=99 * 1024 * 1024), 1024, "test://big"),
-        apt.DownloadTooLarge)
+        apt.Refused)
 
 # A body that understates its length, or gives none, is caught while reading.
 refuses("understated Content-Length",
         lambda: apt._read_capped(Body(5000, declared=10), 1024, "test://liar"),
-        apt.DownloadTooLarge)
+        apt.Refused)
 refuses("no Content-Length at all",
         lambda: apt._read_capped(Body(5000), 1024, "test://nolen"),
-        apt.DownloadTooLarge)
+        apt.Refused)
 
 # Under the ceiling the body still arrives whole - a cap that truncates would
 # be worse than no cap, because the parse would half-succeed.
@@ -99,9 +99,9 @@ def hop(newurl):
     return _guard.redirect_request(_req, io.BytesIO(b""), 302, "Found", {}, newurl)
 
 
-refuses("a redirect off our hosts", lambda: hop("https://evil.test/x"), ValueError)
+refuses("a redirect off our hosts", lambda: hop("https://evil.test/x"), apt.Refused)
 refuses("a redirect downgrading to http",
-        lambda: hop("http://aeronav.faa.gov/x"), ValueError)
+        lambda: hop("http://aeronav.faa.gov/x"), apt.Refused)
 check("a redirect within our hosts is followed",
       hop("https://aeronav.faa.gov/b").get_full_url(), "https://aeronav.faa.gov/b")
 
@@ -127,15 +127,10 @@ def _zip(entries, size):
     return raw.getvalue()
 
 
-def _opened(blob):
-    return apt.zipfile.ZipFile(io.BytesIO(blob))
-
-
 refuses("too many entries",
-        lambda: apt._zip_within_limits(_opened(_zip(apt.MAX_ZIP_ENTRIES + 1, 1)), "many"),
-        apt.DownloadTooLarge)
+        lambda: apt._open_zip(_zip(apt.MAX_ZIP_ENTRIES + 1, 1), "many"), apt.Refused)
 check("an ordinary archive passes",
-      apt._zip_within_limits(_opened(_zip(4, 16)), "ok") is not None, True)
+      apt._open_zip(_zip(4, 16), "ok") is not None, True)
 
 # The point of reading the directory rather than decompressing: this archive is
 # a rounding error on disk and eight megabytes once opened. Nothing here is
@@ -143,21 +138,19 @@ check("an ordinary archive passes",
 _bomb = _zip(2, 4 * 1024 * 1024)
 check("the bomb is tiny compressed", len(_bomb) < 64 * 1024, True)
 check("and claims 8 MB expanded",
-      sum(i.file_size for i in _opened(_bomb).infolist()), 8 * 1024 * 1024)
+      sum(i.file_size for i in apt._open_zip(_bomb, "bomb").infolist()), 8 * 1024 * 1024)
 
 _ceiling = apt.MAX_ZIP_BYTES
 apt.MAX_ZIP_BYTES = 1024 * 1024
 refuses("expands past the ceiling",
-        lambda: apt._zip_within_limits(_opened(_bomb), "bomb"), apt.DownloadTooLarge)
+        lambda: apt._open_zip(_bomb, "bomb"), apt.Refused)
 apt.MAX_ZIP_BYTES = _ceiling
 check("and passes once the ceiling clears it",
-      apt._zip_within_limits(_opened(_bomb), "bomb") is not None, True)
+      apt._open_zip(_bomb, "bomb") is not None, True)
 
 # The real products must sit under their ceilings, or the plugin cannot build.
 # Measured in the 03_Sep_2026 cycle: 7.7 / 1.3 / 0.4 MB compressed, and the
 # largest expands to 44 MB across ten members.
-check("NASR ceiling clears the measured 7.7 MB",
-      apt.MAX_BYTES_NASR > 8 * 1024 * 1024, True)
 check("bulk ceiling clears the measured 15.5 MB",
       apt.MAX_BYTES_BULK > 16 * 1024 * 1024, True)
 check("zip ceiling clears the measured 44 MB",
@@ -176,20 +169,20 @@ check("but none of them carry an identifier",
       sum(1 for r in _junk if r[0]), 0)
 refuses("so the floor refuses it",
         lambda: apt._require_rows("airports.csv", _junk, apt.MIN_OA_AIRPORTS),
-        RuntimeError)
+        apt.Refused)
 refuses("and refuses an empty parse",
         lambda: apt._require_rows("airports.csv", [], apt.MIN_OA_AIRPORTS),
-        RuntimeError)
+        apt.Refused)
 
 # Rows without an identifier do not count towards the floor - the failure being
 # caught produces plenty of rows and no identifiers.
 check("a real file passes",
       apt._require_rows("airports.csv", [("K%04d" % i, "x") for i in range(20000)],
-                        apt.MIN_OA_AIRPORTS) is not None, True)
+                        apt.MIN_OA_AIRPORTS), None)
 refuses("padding with blank rows does not clear the floor",
         lambda: apt._require_rows(
             "airports.csv", [("KATL", "x")] + [("", "")] * 20000, apt.MIN_OA_AIRPORTS),
-        RuntimeError)
+        apt.Refused)
 
 # The floors must sit under the real files or a good build would be refused.
 # Measured: 86,032 world airports and 48,224 runways.

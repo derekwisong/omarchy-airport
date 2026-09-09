@@ -147,45 +147,43 @@ FETCH_HOSTS = frozenset((
     "api.wheretheiss.at",
 ))
 
-# Ceilings on a response body. None of these is a guess. Measured in the
-# 03_Sep_2026 cycle: the NASR products are 7.7, 1.3 and 0.4 MB, the d-TPP
-# metafile 15.5 MB, OurAirports' airports.csv 12.1 MB. The default covers the
-# small stuff, and the largest thing riding on it is an Overpass answer for a
-# big field - 0.45 MB at Dallas, 0.25 at Atlanta, because those queries ask for
-# tags and a centre rather than geometry. Each ceiling sits well above what it
-# covers: they exist to stop an unbounded read, not to police file sizes.
+# Ceilings on a response body, measured rather than guessed. In the 03_Sep_2026
+# cycle the NASR zips are 7.7, 1.3 and 0.4 MB, the d-TPP metafile 15.5 MB and
+# OurAirports' airports.csv 12.1 MB; the largest thing on the default is an
+# Overpass answer for a big field, 0.45 MB at Dallas. They stop an unbounded
+# read, so each sits well clear of what it covers.
 MAX_BYTES = 16 * 1024 * 1024          # JSON, METAR, Overpass, HTML, radar PNG
-MAX_BYTES_NASR = 32 * 1024 * 1024     # the 28-day CSV subscription zips
-MAX_BYTES_CHART = 32 * 1024 * 1024    # a single approach plate or diagram
-MAX_BYTES_BULK = 64 * 1024 * 1024     # d-TPP / CS indexes, OurAirports CSVs
+MAX_BYTES_CHART = 32 * 1024 * 1024    # one approach plate or diagram
+MAX_BYTES_BULK = 64 * 1024 * 1024     # NASR zips, d-TPP / CS indexes, OA CSVs
 
-# A NASR zip holds ten members and expands to 44 MB. Both are checked off the
-# central directory before a single byte is decompressed.
+# A NASR zip holds ten members and expands to 44 MB.
 MAX_ZIP_ENTRIES = 64
 MAX_ZIP_BYTES = 128 * 1024 * 1024
 
+# A floor on a bulk CSV, because it is the one download that fails quietly:
+# DictReader reads an HTML error page as rows whose columns do not match, so
+# every field comes back empty. Measured at 86,053 airports and 48,230 runways.
+MIN_OA_AIRPORTS = 10000
+MIN_OA_RUNWAYS = 5000
 
-class DownloadTooLarge(Exception):
-    """A response declared or reached more bytes than its ceiling allows.
+
+class Refused(Exception):
+    """Something arrived that we will not use, and asking again will not help.
 
     Its own type so the retry loop lets it through: re-requesting a file that
-    is too big only downloads too much again."""
+    is too big, or a host we do not talk to, only does it again."""
 
 
 def _require_fetch_host(url):
-    """Refuse anything that is not https to a host we actually use."""
+    """Only https, and only to a source we actually use."""
     parts = urllib.parse.urlparse(url)
     if parts.scheme != "https" or parts.hostname not in FETCH_HOSTS:
-        raise ValueError("refusing to fetch %r: not an allowed data source" % url)
+        raise Refused("%s is not an allowed data source" % url)
 
 
 class _RedirectGuard(urllib.request.HTTPRedirectHandler):
-    """Check the destination of every hop.
-
-    urllib follows redirects on its own and says nothing about it, so without
-    this one 302 off an allowed host lands the download anywhere at all - and
-    the size ceiling would be the only thing left between us and a stranger's
-    server."""
+    """Check where each hop lands. urllib follows redirects and says nothing,
+    so one 302 off an allowed host would otherwise go anywhere at all."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         _require_fetch_host(newurl)
@@ -197,46 +195,52 @@ _OPENER = urllib.request.build_opener(_RedirectGuard)
 
 
 def _read_capped(resp, limit, url):
-    """Read a response body, refusing one that is over `limit` bytes.
+    """Read a body, refusing one over `limit` bytes.
 
-    Content-Length is checked first so an oversized body is refused before any
-    of it is allocated. That header is a claim rather than a fact, so the read
-    itself is also counted - which is what catches a response that understated
-    its length or sent none at all."""
+    Content-Length is checked first, so an oversized body is refused before any
+    of it is allocated. It is a claim rather than a fact, so the read is
+    counted too - which catches a response that understated it or sent none."""
     declared = resp.headers.get("Content-Length")
     if declared and declared.isdigit() and int(declared) > limit:
-        raise DownloadTooLarge(
-            "%s declared %s bytes, over the %d byte limit" % (url, declared, limit))
-    chunks = []
-    total = 0
+        raise Refused("%s declared %s bytes, over its %d limit"
+                      % (url, declared, limit))
+    out = bytearray()
     while True:
         chunk = resp.read(65536)
         if not chunk:
-            break
-        total += len(chunk)
-        if total > limit:
-            raise DownloadTooLarge("%s exceeded the %d byte limit" % (url, limit))
-        chunks.append(chunk)
-    return b"".join(chunks)
+            return bytes(out)
+        out += chunk
+        if len(out) > limit:
+            raise Refused("%s went over its %d byte limit" % (url, limit))
 
 
-def _zip_within_limits(zf, label):
-    """Bound a zip off its central directory, before anything is decompressed.
+def _open_zip(blob, label):
+    """Open an archive, refusing one that expands past what we allow.
 
-    zipfile will happily inflate a small archive into all of memory; file_size
-    is the uncompressed size the archive itself claims, so an archive that
-    intends to do that says so here and is refused."""
+    Both counts come off the central directory, before anything is
+    decompressed. file_size is the archive's own claim, but zipfile stops
+    reading there too, so the claim is also the ceiling."""
+    zf = zipfile.ZipFile(io.BytesIO(blob))
     infos = zf.infolist()
-    if len(infos) > MAX_ZIP_ENTRIES:
-        raise DownloadTooLarge(
-            "%s holds %d entries, over the %d entry limit"
-            % (label, len(infos), MAX_ZIP_ENTRIES))
     total = sum(i.file_size for i in infos)
+    if len(infos) > MAX_ZIP_ENTRIES:
+        raise Refused("%s holds %d entries, over the %d limit"
+                      % (label, len(infos), MAX_ZIP_ENTRIES))
     if total > MAX_ZIP_BYTES:
-        raise DownloadTooLarge(
-            "%s expands to %d bytes, over the %d byte limit"
-            % (label, total, MAX_ZIP_BYTES))
+        raise Refused("%s expands to %d bytes, over the %d limit"
+                      % (label, total, MAX_ZIP_BYTES))
     return zf
+
+
+def _require_rows(label, rows, minimum):
+    """Refuse a parse that came back implausibly thin.
+
+    Counts rows carrying an identifier, not rows: the failure this catches
+    produces plenty of the latter and none of the former."""
+    usable = sum(1 for r in rows if r[0])
+    if usable < minimum:
+        raise Refused("%s parsed to %d usable rows, under the %d expected"
+                      % (label, usable, minimum))
 
 
 class Http:
@@ -256,7 +260,7 @@ class Http:
                 with _OPENER.open(req, timeout=timeout) as resp:
                     raw = _read_capped(resp, max_bytes, url)
                 return raw if binary else raw.decode("utf-8", "replace")
-            except (DownloadTooLarge, ValueError):
+            except Refused:
                 raise
             except urllib.error.HTTPError as exc:
                 last = exc
@@ -623,16 +627,16 @@ def build_nasr(conn, cycle_date):
     stamp = nasr_stamp(cycle_date)
     PROGRESS.step("Downloading FAA airport records")
     apt_zip = Http.get("%s/%s_APT_CSV.zip" % (NFDC_EXTRA, stamp), binary=True,
-                       timeout=300, max_bytes=MAX_BYTES_NASR)
+                       timeout=300, max_bytes=MAX_BYTES_BULK)
     PROGRESS.step("Downloading FAA frequencies")
     frq_zip = Http.get("%s/%s_FRQ_CSV.zip" % (NFDC_EXTRA, stamp), binary=True,
-                       timeout=300, max_bytes=MAX_BYTES_NASR)
+                       timeout=300, max_bytes=MAX_BYTES_BULK)
 
     for table in ("apt", "rwy", "rwy_end", "rmk", "con", "frq", "att", "airspace"):
         conn.execute("DELETE FROM %s" % table)
 
     counts = {}
-    with _zip_within_limits(zipfile.ZipFile(io.BytesIO(apt_zip)), "APT_CSV.zip") as zf:
+    with _open_zip(apt_zip, "APT_CSV.zip") as zf:
         names = {n.upper(): n for n in zf.namelist()}
 
         rows = []
@@ -682,8 +686,8 @@ def build_nasr(conn, cycle_date):
 
     PROGRESS.step("Downloading FAA class airspace")
     cls_zip = Http.get("%s/%s_CLS_ARSP_CSV.zip" % (NFDC_EXTRA, stamp), binary=True,
-                       timeout=300, max_bytes=MAX_BYTES_NASR)
-    with _zip_within_limits(zipfile.ZipFile(io.BytesIO(cls_zip)), "CLS_ARSP_CSV.zip") as zf:
+                       timeout=300, max_bytes=MAX_BYTES_BULK)
+    with _open_zip(cls_zip, "CLS_ARSP_CSV.zip") as zf:
         names = {n.upper(): n for n in zf.namelist()}
         rows = [(r.get("ARPT_ID", ""), r.get("CLASS_B_AIRSPACE", ""),
                  r.get("CLASS_C_AIRSPACE", ""), r.get("CLASS_D_AIRSPACE", ""),
@@ -693,7 +697,7 @@ def build_nasr(conn, cycle_date):
         conn.executemany("INSERT INTO airspace VALUES (?,?,?,?,?,?,?)", rows)
         counts["class_airspace"] = len(rows)
 
-    with _zip_within_limits(zipfile.ZipFile(io.BytesIO(frq_zip)), "FRQ_CSV.zip") as zf:
+    with _open_zip(frq_zip, "FRQ_CSV.zip") as zf:
         names = {n.upper(): n for n in zf.namelist()}
         rows = [(r.get("SERVICED_FACILITY", ""), r.get("FACILITY", ""),
                  r.get("FAC_NAME", ""), r.get("FACILITY_TYPE", ""), r.get("FREQ", ""),
@@ -755,31 +759,6 @@ def build_cs(conn):
     meta_set(conn, "cs_edition", edition)
     meta_set(conn, "cs_effective", effective.isoformat())
     return {"chart_supplement_pages": len(rows)}
-
-
-# A floor on what a bulk CSV must parse to before it is allowed to replace the
-# table it feeds. Unlike every other download here, a bad CSV does not raise:
-# csv.DictReader reads an HTML error page as rows whose columns do not match,
-# so every field comes back empty and a 200 that is really a 503 quietly swaps
-# the world airport list for wreckage. Measured at 86,032 airports and 48,224
-# runways, so these sit an order of magnitude under a real file - low enough
-# that the dataset shrinking could never trip them.
-MIN_OA_AIRPORTS = 10000
-MIN_OA_RUNWAYS = 5000
-
-
-def _require_rows(label, rows, minimum):
-    """Refuse a parse that came back implausibly thin.
-
-    Counts rows carrying an identifier rather than rows outright, because the
-    failure this exists to catch produces plenty of the latter and none of the
-    former."""
-    usable = sum(1 for r in rows if r[0])
-    if usable < minimum:
-        raise RuntimeError(
-            "%s parsed to %d usable rows, under the %d expected - refusing to "
-            "replace the cached table" % (label, usable, minimum))
-    return rows
 
 
 def build_ourairports_apt(conn):
