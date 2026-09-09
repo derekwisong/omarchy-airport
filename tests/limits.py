@@ -59,6 +59,16 @@ refuses("plain http to a real source",
         lambda: apt.Http.get("http://aviationweather.gov/x"), ValueError)
 refuses("a host that merely ends in one of ours",
         lambda: apt.Http.get("https://nfdc.faa.gov.evil.test/x"), ValueError)
+# The host is the parsed hostname, so the usual ways of dressing up a URL to
+# read as one of ours do not work: credentials before the @ name the host that
+# follows them, and a real host in the path is still just a path.
+refuses("an allowed host in the credentials",
+        lambda: apt.Http.get("https://nfdc.faa.gov@evil.test/x"), ValueError)
+refuses("an allowed host in the path",
+        lambda: apt.Http.get("https://evil.test/nfdc.faa.gov"), ValueError)
+refuses("a bare address", lambda: apt.Http.get("https://93.184.216.34/x"), ValueError)
+# Case is not part of a hostname, so this one has to be allowed.
+check("an allowed host shouted", apt._require_fetch_host("https://NFDC.FAA.GOV/x"), None)
 
 # Content-Length is checked before the body is allocated.
 refuses("declared over the ceiling",
@@ -94,6 +104,12 @@ refuses("a redirect downgrading to http",
         lambda: hop("http://aeronav.faa.gov/x"), ValueError)
 check("a redirect within our hosts is followed",
       hop("https://aeronav.faa.gov/b").get_full_url(), "https://aeronav.faa.gov/b")
+
+# Every status that redirects has to route through redirect_request, or a hop
+# arrives by a door the guard is not standing at.
+for _code in (301, 302, 303, 307, 308):
+    check("status %d is a redirect the guard sees" % _code,
+          hasattr(_guard, "http_error_%d" % _code), True)
 
 # A zip is bounded off its central directory, before anything is decompressed.
 apt._load_build_modules()

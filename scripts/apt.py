@@ -147,11 +147,13 @@ FETCH_HOSTS = frozenset((
     "api.wheretheiss.at",
 ))
 
-# Ceilings on a response body. None of these is a guess: in the 03_Sep_2026
-# cycle the NASR products measured 7.7, 1.3 and 0.4 MB, the d-TPP metafile
-# 15.5 MB and OurAirports' airports.csv 12.1 MB. The limits sit several cycles
-# of growth above that, which is the point - they exist to stop an unbounded
-# read, not to police the FAA's file sizes.
+# Ceilings on a response body. None of these is a guess. Measured in the
+# 03_Sep_2026 cycle: the NASR products are 7.7, 1.3 and 0.4 MB, the d-TPP
+# metafile 15.5 MB, OurAirports' airports.csv 12.1 MB. The default covers the
+# small stuff, and the largest thing riding on it is an Overpass answer for a
+# big field - 0.45 MB at Dallas, 0.25 at Atlanta, because those queries ask for
+# tags and a centre rather than geometry. Each ceiling sits well above what it
+# covers: they exist to stop an unbounded read, not to police file sizes.
 MAX_BYTES = 16 * 1024 * 1024          # JSON, METAR, Overpass, HTML, radar PNG
 MAX_BYTES_NASR = 32 * 1024 * 1024     # the 28-day CSV subscription zips
 MAX_BYTES_CHART = 32 * 1024 * 1024    # a single approach plate or diagram
