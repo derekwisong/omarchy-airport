@@ -168,10 +168,15 @@ omarchy restart shell      # required to pick up QML changes
 remove it and `omarchy plugin add .` instead.
 
 ```bash
-./tests/smoke.sh              # 112 checks, network required
+./tests/smoke.sh              # 121 checks, network required
 ./tests/smoke.sh --with-osm   # adds Overpass and AirNav
+python3 tests/limits.py       # download ceilings, hosts, redirects, zip bounds
 omarchy plugin validate .
 ```
+
+The rest of `tests/` runs offline and takes no arguments — `wx.py`, `geometry.py`,
+`traffic.py`, `transport.py`, `overpass.py`, and `escaping.js`, `scope.js`, `wind.js`
+under `node`.
 
 NASR rows are stored as positional arrays over the allowlists at the top of `apt.py`; a column
 not on its list reads back as absent, so add it there and rebuild. Never name a QML property

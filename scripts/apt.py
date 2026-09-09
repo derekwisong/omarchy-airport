@@ -125,11 +125,125 @@ NM_PER_DEG = 60.0
 # HTTP
 # --------------------------------------------------------------------------
 
+# Every host this plugin fetches from. CHART_HOSTS already does this one layer
+# down for chart PDFs; this is the same idea for everything else, and it is
+# what makes the redirect check below mean anything.
+FETCH_HOSTS = frozenset((
+    "aeronav.faa.gov",
+    "nfdc.faa.gov",
+    "aviationweather.gov",
+    "tfr.faa.gov",
+    "nasstatus.faa.gov",
+    "davidmegginson.github.io",
+    "overpass-api.de",
+    "overpass.kumi.systems",
+    "overpass.private.coffee",
+    "api.sunrise-sunset.org",
+    "www.airnav.com",
+    "api.adsb.lol",
+    "mapservices.weather.noaa.gov",
+    "mesonet.agron.iastate.edu",
+    "timeapi.io",
+    "api.wheretheiss.at",
+))
+
+# Ceilings on a response body. None of these is a guess: in the 03_Sep_2026
+# cycle the NASR products measured 7.7, 1.3 and 0.4 MB, the d-TPP metafile
+# 15.5 MB and OurAirports' airports.csv 12.1 MB. The limits sit several cycles
+# of growth above that, which is the point - they exist to stop an unbounded
+# read, not to police the FAA's file sizes.
+MAX_BYTES = 16 * 1024 * 1024          # JSON, METAR, Overpass, HTML, radar PNG
+MAX_BYTES_NASR = 32 * 1024 * 1024     # the 28-day CSV subscription zips
+MAX_BYTES_CHART = 32 * 1024 * 1024    # a single approach plate or diagram
+MAX_BYTES_BULK = 64 * 1024 * 1024     # d-TPP / CS indexes, OurAirports CSVs
+
+# A NASR zip holds ten members and expands to 44 MB. Both are checked off the
+# central directory before a single byte is decompressed.
+MAX_ZIP_ENTRIES = 64
+MAX_ZIP_BYTES = 128 * 1024 * 1024
+
+
+class DownloadTooLarge(Exception):
+    """A response declared or reached more bytes than its ceiling allows.
+
+    Its own type so the retry loop lets it through: re-requesting a file that
+    is too big only downloads too much again."""
+
+
+def _require_fetch_host(url):
+    """Refuse anything that is not https to a host we actually use."""
+    parts = urllib.parse.urlparse(url)
+    if parts.scheme != "https" or parts.hostname not in FETCH_HOSTS:
+        raise ValueError("refusing to fetch %r: not an allowed data source" % url)
+
+
+class _RedirectGuard(urllib.request.HTTPRedirectHandler):
+    """Check the destination of every hop.
+
+    urllib follows redirects on its own and says nothing about it, so without
+    this one 302 off an allowed host lands the download anywhere at all - and
+    the size ceiling would be the only thing left between us and a stranger's
+    server."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _require_fetch_host(newurl)
+        return urllib.request.HTTPRedirectHandler.redirect_request(
+            self, req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_RedirectGuard)
+
+
+def _read_capped(resp, limit, url):
+    """Read a response body, refusing one that is over `limit` bytes.
+
+    Content-Length is checked first so an oversized body is refused before any
+    of it is allocated. That header is a claim rather than a fact, so the read
+    itself is also counted - which is what catches a response that understated
+    its length or sent none at all."""
+    declared = resp.headers.get("Content-Length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise DownloadTooLarge(
+            "%s declared %s bytes, over the %d byte limit" % (url, declared, limit))
+    chunks = []
+    total = 0
+    while True:
+        chunk = resp.read(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise DownloadTooLarge("%s exceeded the %d byte limit" % (url, limit))
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _zip_within_limits(zf, label):
+    """Bound a zip off its central directory, before anything is decompressed.
+
+    zipfile will happily inflate a small archive into all of memory; file_size
+    is the uncompressed size the archive itself claims, so an archive that
+    intends to do that says so here and is refused."""
+    infos = zf.infolist()
+    if len(infos) > MAX_ZIP_ENTRIES:
+        raise DownloadTooLarge(
+            "%s holds %d entries, over the %d entry limit"
+            % (label, len(infos), MAX_ZIP_ENTRIES))
+    total = sum(i.file_size for i in infos)
+    if total > MAX_ZIP_BYTES:
+        raise DownloadTooLarge(
+            "%s expands to %d bytes, over the %d byte limit"
+            % (label, total, MAX_ZIP_BYTES))
+    return zf
+
+
 class Http:
     """Small retrying HTTP client. Overpass and the FAA both throttle."""
 
     @staticmethod
-    def get(url, data=None, timeout=90, retries=3, backoff=3.0, binary=False, headers=None):
+    def get(url, data=None, timeout=90, retries=3, backoff=3.0, binary=False,
+            headers=None, max_bytes=MAX_BYTES):
+        _require_fetch_host(url)
         hdrs = {"User-Agent": UA}
         if headers:
             hdrs.update(headers)
@@ -137,9 +251,11 @@ class Http:
         for attempt in range(retries):
             try:
                 req = urllib.request.Request(url, data=data, headers=hdrs)
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    raw = resp.read()
+                with _OPENER.open(req, timeout=timeout) as resp:
+                    raw = _read_capped(resp, max_bytes, url)
                 return raw if binary else raw.decode("utf-8", "replace")
+            except (DownloadTooLarge, ValueError):
+                raise
             except urllib.error.HTTPError as exc:
                 last = exc
                 if exc.code in (403, 408, 429, 500, 502, 503, 504) and attempt < retries - 1:
@@ -165,17 +281,19 @@ class Http:
     @staticmethod
     def peek(url, n=1024, timeout=30):
         """Read only the first n bytes. Used to read cycle headers off huge XML."""
+        _require_fetch_host(url)
         req = urllib.request.Request(url, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             return resp.read(n).decode("utf-8", "replace")
 
     @staticmethod
     def exists(url, timeout=30):
         """Probe with a ranged GET - nfdc.faa.gov answers HEAD with 503."""
         try:
+            _require_fetch_host(url)
             req = urllib.request.Request(
                 url, headers={"User-Agent": UA, "Range": "bytes=0-63"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _OPENER.open(req, timeout=timeout) as resp:
                 return 200 <= resp.status < 300
         except Exception:
             return False
@@ -502,15 +620,17 @@ def build_nasr(conn, cycle_date):
     _load_build_modules()
     stamp = nasr_stamp(cycle_date)
     PROGRESS.step("Downloading FAA airport records")
-    apt_zip = Http.get("%s/%s_APT_CSV.zip" % (NFDC_EXTRA, stamp), binary=True, timeout=300)
+    apt_zip = Http.get("%s/%s_APT_CSV.zip" % (NFDC_EXTRA, stamp), binary=True,
+                       timeout=300, max_bytes=MAX_BYTES_NASR)
     PROGRESS.step("Downloading FAA frequencies")
-    frq_zip = Http.get("%s/%s_FRQ_CSV.zip" % (NFDC_EXTRA, stamp), binary=True, timeout=300)
+    frq_zip = Http.get("%s/%s_FRQ_CSV.zip" % (NFDC_EXTRA, stamp), binary=True,
+                       timeout=300, max_bytes=MAX_BYTES_NASR)
 
     for table in ("apt", "rwy", "rwy_end", "rmk", "con", "frq", "att", "airspace"):
         conn.execute("DELETE FROM %s" % table)
 
     counts = {}
-    with zipfile.ZipFile(io.BytesIO(apt_zip)) as zf:
+    with _zip_within_limits(zipfile.ZipFile(io.BytesIO(apt_zip)), "APT_CSV.zip") as zf:
         names = {n.upper(): n for n in zf.namelist()}
 
         rows = []
@@ -559,8 +679,9 @@ def build_nasr(conn, cycle_date):
         counts["contacts"] = len(rows)
 
     PROGRESS.step("Downloading FAA class airspace")
-    cls_zip = Http.get("%s/%s_CLS_ARSP_CSV.zip" % (NFDC_EXTRA, stamp), binary=True, timeout=300)
-    with zipfile.ZipFile(io.BytesIO(cls_zip)) as zf:
+    cls_zip = Http.get("%s/%s_CLS_ARSP_CSV.zip" % (NFDC_EXTRA, stamp), binary=True,
+                       timeout=300, max_bytes=MAX_BYTES_NASR)
+    with _zip_within_limits(zipfile.ZipFile(io.BytesIO(cls_zip)), "CLS_ARSP_CSV.zip") as zf:
         names = {n.upper(): n for n in zf.namelist()}
         rows = [(r.get("ARPT_ID", ""), r.get("CLASS_B_AIRSPACE", ""),
                  r.get("CLASS_C_AIRSPACE", ""), r.get("CLASS_D_AIRSPACE", ""),
@@ -570,7 +691,7 @@ def build_nasr(conn, cycle_date):
         conn.executemany("INSERT INTO airspace VALUES (?,?,?,?,?,?,?)", rows)
         counts["class_airspace"] = len(rows)
 
-    with zipfile.ZipFile(io.BytesIO(frq_zip)) as zf:
+    with _zip_within_limits(zipfile.ZipFile(io.BytesIO(frq_zip)), "FRQ_CSV.zip") as zf:
         names = {n.upper(): n for n in zf.namelist()}
         rows = [(r.get("SERVICED_FACILITY", ""), r.get("FACILITY", ""),
                  r.get("FAC_NAME", ""), r.get("FACILITY_TYPE", ""), r.get("FREQ", ""),
@@ -589,7 +710,8 @@ def build_dtpp(conn):
     _load_build_modules()
     cycle, effective = dtpp_cycle()
     PROGRESS.step("Downloading approach and departure charts")
-    xml = Http.get("%s/d-tpp/%s/xml_data/d-TPP_Metafile.xml" % (AERONAV, cycle), timeout=300)
+    xml = Http.get("%s/d-tpp/%s/xml_data/d-TPP_Metafile.xml" % (AERONAV, cycle),
+                   timeout=300, max_bytes=MAX_BYTES_BULK)
     root = ET.fromstring(xml)
     conn.execute("DELETE FROM chart")
     rows = []
@@ -613,7 +735,8 @@ def build_cs(conn):
     _load_build_modules()
     edition, effective = cs_cycle()
     PROGRESS.step("Downloading the Chart Supplement index")
-    xml = Http.get("%s/afd/%s/afd_%s.xml" % (AERONAV, edition, edition), timeout=180)
+    xml = Http.get("%s/afd/%s/afd_%s.xml" % (AERONAV, edition, edition),
+                   timeout=180, max_bytes=MAX_BYTES_BULK)
     root = ET.fromstring(xml)
     conn.execute("DELETE FROM cs")
     rows = []
@@ -635,7 +758,8 @@ def build_cs(conn):
 def build_ourairports_apt(conn):
     _load_build_modules()
     PROGRESS.step("Downloading worldwide airport list")
-    airports = Http.get(OURAIRPORTS + "/airports.csv", timeout=180)
+    airports = Http.get(OURAIRPORTS + "/airports.csv", timeout=180,
+                        max_bytes=MAX_BYTES_BULK)
     conn.execute("DELETE FROM oa_apt")
     rows = [(r.get("ident", ""), r.get("type", ""), r.get("name", ""),
              _fnum(r.get("latitude_deg")), _fnum(r.get("longitude_deg")),
@@ -651,7 +775,8 @@ def build_ourairports_apt(conn):
 def build_ourairports_rwy(conn):
     _load_build_modules()
     PROGRESS.step("Downloading worldwide runway data")
-    runways = Http.get(OURAIRPORTS + "/runways.csv", timeout=180)
+    runways = Http.get(OURAIRPORTS + "/runways.csv", timeout=180,
+                       max_bytes=MAX_BYTES_BULK)
     conn.execute("DELETE FROM oa_rwy")
     rows = [(r.get("airport_ident", ""), r.get("length_ft", ""), r.get("width_ft", ""),
              r.get("surface", ""), r.get("lighted", ""), r.get("closed", ""),
@@ -842,7 +967,7 @@ def local_chart(url, refresh=False):
     if path.exists() and path.stat().st_size > 0 and not refresh:
         return path
     CHART_DIR.mkdir(parents=True, exist_ok=True)
-    blob = Http.get(url, binary=True, timeout=120)
+    blob = Http.get(url, binary=True, timeout=120, max_bytes=MAX_BYTES_CHART)
     if not blob.startswith(b"%PDF"):
         raise RuntimeError("%s did not return a PDF" % url)
     # Write beside and rename, so a reader never sees a half-written chart.
