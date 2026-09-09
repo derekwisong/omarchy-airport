@@ -755,12 +755,36 @@ def build_cs(conn):
     return {"chart_supplement_pages": len(rows)}
 
 
+# A floor on what a bulk CSV must parse to before it is allowed to replace the
+# table it feeds. Unlike every other download here, a bad CSV does not raise:
+# csv.DictReader reads an HTML error page as rows whose columns do not match,
+# so every field comes back empty and a 200 that is really a 503 quietly swaps
+# the world airport list for wreckage. Measured at 86,032 airports and 48,224
+# runways, so these sit an order of magnitude under a real file - low enough
+# that the dataset shrinking could never trip them.
+MIN_OA_AIRPORTS = 10000
+MIN_OA_RUNWAYS = 5000
+
+
+def _require_rows(label, rows, minimum):
+    """Refuse a parse that came back implausibly thin.
+
+    Counts rows carrying an identifier rather than rows outright, because the
+    failure this exists to catch produces plenty of the latter and none of the
+    former."""
+    usable = sum(1 for r in rows if r[0])
+    if usable < minimum:
+        raise RuntimeError(
+            "%s parsed to %d usable rows, under the %d expected - refusing to "
+            "replace the cached table" % (label, usable, minimum))
+    return rows
+
+
 def build_ourairports_apt(conn):
     _load_build_modules()
     PROGRESS.step("Downloading worldwide airport list")
     airports = Http.get(OURAIRPORTS + "/airports.csv", timeout=180,
                         max_bytes=MAX_BYTES_BULK)
-    conn.execute("DELETE FROM oa_apt")
     rows = [(r.get("ident", ""), r.get("type", ""), r.get("name", ""),
              _fnum(r.get("latitude_deg")), _fnum(r.get("longitude_deg")),
              _fnum(r.get("elevation_ft")), r.get("iso_country", ""),
@@ -768,6 +792,10 @@ def build_ourairports_apt(conn):
              r.get("icao_code", ""), r.get("iata_code", ""),
              r.get("local_code", ""), r.get("wikipedia_link", ""))
             for r in csv.DictReader(io.StringIO(airports))]
+    # Checked before the delete, so a bad download leaves the old table alone
+    # rather than emptying it and reporting success.
+    _require_rows("airports.csv", rows, MIN_OA_AIRPORTS)
+    conn.execute("DELETE FROM oa_apt")
     conn.executemany("INSERT INTO oa_apt VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     return {"world_airports": len(rows)}
 
@@ -777,13 +805,14 @@ def build_ourairports_rwy(conn):
     PROGRESS.step("Downloading worldwide runway data")
     runways = Http.get(OURAIRPORTS + "/runways.csv", timeout=180,
                        max_bytes=MAX_BYTES_BULK)
-    conn.execute("DELETE FROM oa_rwy")
     rows = [(r.get("airport_ident", ""), r.get("length_ft", ""), r.get("width_ft", ""),
              r.get("surface", ""), r.get("lighted", ""), r.get("closed", ""),
              r.get("le_ident", ""), r.get("he_ident", ""),
              r.get("le_latitude_deg", ""), r.get("le_longitude_deg", ""),
              r.get("he_latitude_deg", ""), r.get("he_longitude_deg", ""))
             for r in csv.DictReader(io.StringIO(runways))]
+    _require_rows("runways.csv", rows, MIN_OA_RUNWAYS)
+    conn.execute("DELETE FROM oa_rwy")
     conn.executemany("INSERT INTO oa_rwy VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     return {"world_runways": len(rows)}
 

@@ -148,6 +148,40 @@ check("zip ceiling clears the measured 44 MB",
       apt.MAX_ZIP_BYTES > 44 * 1024 * 1024, True)
 check("zip entry ceiling clears the measured 10", apt.MAX_ZIP_ENTRIES > 10, True)
 
+# A bulk CSV is the one download that fails quietly: DictReader reads an HTML
+# error page as rows rather than raising, so the floor is on what parsed, and
+# it is checked before the table it replaces is emptied.
+_html = ("<!DOCTYPE html>\n<html><body><h1>503 Service Unavailable</h1>\n"
+         + "<p>try later</p>\n" * 40 + "</body></html>")
+_junk = [(r.get("ident", ""), r.get("name", ""))
+         for r in apt.csv.DictReader(io.StringIO(_html))]
+check("an error page parses as rows, not an error", len(_junk) > 0, True)
+check("but none of them carry an identifier",
+      sum(1 for r in _junk if r[0]), 0)
+refuses("so the floor refuses it",
+        lambda: apt._require_rows("airports.csv", _junk, apt.MIN_OA_AIRPORTS),
+        RuntimeError)
+refuses("and refuses an empty parse",
+        lambda: apt._require_rows("airports.csv", [], apt.MIN_OA_AIRPORTS),
+        RuntimeError)
+
+# Rows without an identifier do not count towards the floor - the failure being
+# caught produces plenty of rows and no identifiers.
+check("a real file passes",
+      apt._require_rows("airports.csv", [("K%04d" % i, "x") for i in range(20000)],
+                        apt.MIN_OA_AIRPORTS) is not None, True)
+refuses("padding with blank rows does not clear the floor",
+        lambda: apt._require_rows(
+            "airports.csv", [("KATL", "x")] + [("", "")] * 20000, apt.MIN_OA_AIRPORTS),
+        RuntimeError)
+
+# The floors must sit under the real files or a good build would be refused.
+# Measured: 86,032 world airports and 48,224 runways.
+check("airport floor clears the measured 86,032",
+      apt.MIN_OA_AIRPORTS < 86032, True)
+check("runway floor clears the measured 48,224",
+      apt.MIN_OA_RUNWAYS < 48224, True)
+
 if fail:
     sys.exit(1)
 print("download limits ok")
