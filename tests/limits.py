@@ -219,6 +219,40 @@ check("a real chart path stays inside the cache",
       (apt.CHART_DIR / "d-tpp_2609_00026AD.PDF").resolve().parent,
       apt.CHART_DIR.resolve())
 
+# Cache writes. The temporary used to carry a predictable "<name>.part", which
+# a planted symlink could point anywhere: the write followed it and truncated
+# whatever it named, before the rename ever happened.
+import os  # noqa: E402
+import tempfile  # noqa: E402
+
+_d = pathlib.Path(tempfile.mkdtemp())
+_victim = _d / "VICTIM"
+_victim.write_text("precious")
+_dst = _d / "cache" / "chart.pdf"
+_dst.parent.mkdir()
+
+(_dst.parent / "chart.pdf.part").symlink_to(_victim)   # the old predictable name
+apt._write_private(_dst, b"%PDF-1.4 fresh")
+check("a symlink at the old temp name is not followed", _victim.read_text(), "precious")
+check("and the file still lands", _dst.read_bytes()[:4], b"%PDF")
+check("written private", oct(_dst.stat().st_mode & 0o777), "0o600")
+
+_evil = _dst.parent / "evil.pdf"
+_evil.symlink_to(_victim)
+refuses("a destination that is a symlink",
+        lambda: apt._write_private(_evil, b"x"), apt.Refused)
+check("so its target is untouched", _victim.read_text(), "precious")
+
+_adir = _dst.parent / "adir"
+_adir.mkdir()
+refuses("a destination that is a directory",
+        lambda: apt._write_private(_adir, b"x"), apt.Refused)
+
+apt._write_private(_dst, b"%PDF second")
+check("rewriting works", _dst.read_bytes(), b"%PDF second")
+check("and leaves no temporary of its own",
+      [n for n in os.listdir(_dst.parent) if n.startswith(".chart.pdf.")], [])
+
 if fail:
     sys.exit(1)
 print("download limits ok")

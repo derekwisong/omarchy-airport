@@ -232,6 +232,41 @@ def _open_zip(blob, label):
     return zf
 
 
+def _write_private(path, data):
+    """Write a file atomically, following nothing planted in the way.
+
+    The temporary carries a random name and is created O_EXCL|O_NOFOLLOW at
+    0600, so a symlink left at a predictable one cannot be followed and its
+    target truncated. Both it and the rename go through a descriptor for the
+    directory, so the path cannot be swapped underneath, and a destination that
+    is not a regular file is refused rather than written through."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(data, str):
+        data = data.encode()
+    dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise Refused("%s is not a regular file" % path)
+        tmp = ".%s.%s" % (path.name, os.urandom(8).hex())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=dir_fd)
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.replace(tmp, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except OSError:
+            os.unlink(tmp, dir_fd=dir_fd)
+            raise
+    finally:
+        os.close(dir_fd)
+
+
 def _parse_xml(text, label):
     """Parse XML from a data source, refusing a DTD.
 
@@ -999,10 +1034,7 @@ def local_chart(url, refresh=False):
     blob = Http.get(url, binary=True, timeout=120, max_bytes=MAX_BYTES_CHART)
     if not blob.startswith(b"%PDF"):
         raise RuntimeError("%s did not return a PDF" % url)
-    # Write beside and rename, so a reader never sees a half-written chart.
-    tmp = path.with_suffix(path.suffix + ".part")
-    tmp.write_bytes(blob)
-    os.replace(tmp, path)
+    _write_private(path, blob)
     return path
 
 
@@ -1089,7 +1121,9 @@ def cmd_cache(args):
     # place meant a failed download left no cache at all, and a refresh blanked
     # the panel for the two minutes it was running.
     tmp = DB_PATH.with_suffix(".building")
-    if tmp.exists():
+    # lexists, not exists: a dangling symlink left here reads as absent, and
+    # sqlite would then create the database through it.
+    if os.path.lexists(tmp):
         tmp.unlink()
     total = sum(TIER_STEPS[t] for t in tiers)
     PROGRESS.begin(total, "Building the airport cache")
@@ -1866,7 +1900,7 @@ def read_recents():
 
 def write_recents(entries):
     RECENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RECENTS_PATH.write_text(json.dumps(entries, indent=2))
+    _write_private(RECENTS_PATH, json.dumps(entries, indent=2))
 
 
 def touch_recent(rec):
@@ -1951,7 +1985,7 @@ def _tfr_list():
         return fetched
     data = fetched or []
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    TFR_CACHE.write_text(json.dumps(data))
+    _write_private(TFR_CACHE, json.dumps(data))
     return data
 
 
@@ -1993,9 +2027,7 @@ def _tfr_locate(notam_ids, cache):
             tfr_geometry(nid, cache)
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = TFR_GEOM_CACHE.with_suffix(".part")
-        tmp.write_text(json.dumps({k: v for k, v in cache.items()}))
-        os.replace(tmp, TFR_GEOM_CACHE)
+        _write_private(TFR_GEOM_CACHE, json.dumps({k: v for k, v in cache.items()}))
     except OSError:
         pass
     return True
@@ -2138,7 +2170,7 @@ def _wx_cached(kind, ident, fetch):
 
     data = fetch(ident)
     if isinstance(data, dict) and "error" not in data and data:
-        path.write_text(json.dumps(data))
+        _write_private(path, json.dumps(data))
         return data
     if isinstance(data, dict) and "error" in data:
         # A transient failure should not poison the cache; serve stale if we have it.
@@ -2149,7 +2181,7 @@ def _wx_cached(kind, ident, fetch):
                 pass
         _WX_UNREACHABLE = True
         return None
-    path.write_text("null")  # station genuinely publishes nothing
+    _write_private(path, "null")  # station genuinely publishes nothing
     return None
 
 
@@ -2566,9 +2598,7 @@ def fetch_twilight(lat, lon, when=None):
         return None
     if results:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".part")
-        tmp.write_text(json.dumps(results))
-        os.replace(tmp, path)
+        _write_private(path, json.dumps(results))
     return results
 
 
@@ -3740,7 +3770,7 @@ def fetch_amenities(rec, refresh=False):
         "routes": unique,
         "attribution": "OpenStreetMap contributors (ODbL)",
     }
-    path.write_text(json.dumps(result))
+    _write_private(path, json.dumps(result))
     return result
 
 
@@ -3950,7 +3980,7 @@ def fetch_fbos(ident, refresh=False):
     result = {"fbos": parse_airnav(html, ident),
               "source": AIRNAV_URL % ident,
               "fetched": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-    path.write_text(json.dumps(result))
+    _write_private(path, json.dumps(result))
     return result
 
 
@@ -4003,9 +4033,7 @@ def _tz_remember(key, zone):
     cache[key] = zone
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = TZ_CACHE.with_suffix(".part")
-        tmp.write_text(json.dumps(cache))
-        os.replace(tmp, TZ_CACHE)
+        _write_private(TZ_CACHE, json.dumps(cache))
     except OSError:
         pass
 
@@ -4143,10 +4171,11 @@ def append_note(ident, text):
     path = notes_path(ident)
     stamp = date.today().isoformat()
     if not path.exists():
-        path.write_text("# %s - personal notes\n\n- %s - %s\n" % (ident.upper(), stamp, text))
+        _write_private(path, "# %s - personal notes\n\n- %s - %s\n"
+                       % (ident.upper(), stamp, text))
     else:
         body = path.read_text().rstrip("\n")
-        path.write_text("%s\n- %s - %s\n" % (body, stamp, text))
+        _write_private(path, "%s\n- %s - %s\n" % (body, stamp, text))
     return path
 
 
@@ -5608,9 +5637,8 @@ def fetch_traffic(rec, radius_nm=TRAFFIC_RADIUS_NM, refresh=False):
               "updated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = TRAFFIC_CACHE.with_suffix(".part")
-        tmp.write_text(json.dumps({"key": key, "at": time.time(), "result": result}))
-        os.replace(tmp, TRAFFIC_CACHE)
+        _write_private(TRAFFIC_CACHE,
+                       json.dumps({"key": key, "at": time.time(), "result": result}))
     except OSError:
         pass
     return result
@@ -5770,9 +5798,7 @@ def fetch_radar(rec, range_nm=25, refresh=False):
             RADAR_DIR.mkdir(parents=True, exist_ok=True)
             stamp = int((valid or datetime.now(timezone.utc)).timestamp())
             png = RADAR_DIR / ("%s-%d-%d.png" % (key.split("/")[0], span, stamp))
-            tmp = png.with_suffix(".part")
-            tmp.write_bytes(raw)
-            os.replace(tmp, png)
+            _write_private(png, raw)
             _radar_prune(png)
         except OSError:
             continue
@@ -5790,10 +5816,8 @@ def fetch_radar(rec, range_nm=25, refresh=False):
 
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = RADAR_CACHE.with_suffix(".part")
-        tmp.write_text(json.dumps({"key": key, "at": time.time(),
-                                   "result": result}))
-        os.replace(tmp, RADAR_CACHE)
+        _write_private(RADAR_CACHE, json.dumps({"key": key, "at": time.time(),
+                                                "result": result}))
     except OSError:
         pass
     return result
@@ -6104,9 +6128,7 @@ def fetch_nas_status(refresh=False):
     data = {"updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "feed": feed, "airports": airports}
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = NAS_CACHE.with_suffix(".part")
-    tmp.write_text(json.dumps(data))
-    os.replace(tmp, NAS_CACHE)
+    _write_private(NAS_CACHE, json.dumps(data))
     return data
 
 
