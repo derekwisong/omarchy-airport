@@ -232,6 +232,21 @@ def _open_zip(blob, label):
     return zf
 
 
+def _parse_xml(text, label):
+    """Parse XML from a data source, refusing a DTD.
+
+    expat caps entity expansion, but the cap is a ratio - against a 64 MB
+    ceiling it would still allow gigabytes. None of these feeds carries a
+    DOCTYPE, so refusing one costs nothing and ends the question. The builder
+    is defined here because ET is imported lazily."""
+
+    class NoDoctype(ET.TreeBuilder):
+        def doctype(self, name, pubid, system):
+            raise Refused("%s carries a DTD" % label)
+
+    return ET.fromstring(text, parser=ET.XMLParser(target=NoDoctype()))
+
+
 def _require_rows(label, rows, minimum):
     """Refuse a parse that came back implausibly thin.
 
@@ -718,7 +733,7 @@ def build_dtpp(conn):
     PROGRESS.step("Downloading approach and departure charts")
     xml = Http.get("%s/d-tpp/%s/xml_data/d-TPP_Metafile.xml" % (AERONAV, cycle),
                    timeout=300, max_bytes=MAX_BYTES_BULK)
-    root = ET.fromstring(xml)
+    root = _parse_xml(xml, "d-TPP metafile")
     conn.execute("DELETE FROM chart")
     rows = []
     for state in root:
@@ -743,7 +758,7 @@ def build_cs(conn):
     PROGRESS.step("Downloading the Chart Supplement index")
     xml = Http.get("%s/afd/%s/afd_%s.xml" % (AERONAV, edition, edition),
                    timeout=180, max_bytes=MAX_BYTES_BULK)
-    root = ET.fromstring(xml)
+    root = _parse_xml(xml, "Chart Supplement index")
     conn.execute("DELETE FROM cs")
     rows = []
     for location in root:
@@ -971,9 +986,13 @@ def local_chart(url, refresh=False):
     URL, so a file that exists is a file that is current."""
     parts = urllib.parse.urlparse(url)
     if parts.scheme != "https" or parts.hostname not in CHART_HOSTS:
-        raise ValueError("refusing to fetch %r: not an FAA chart URL" % url)
+        raise Refused("%s is not an FAA chart URL" % url)
     name = re.sub(r"[^A-Za-z0-9._-]", "_", parts.path.lstrip("/")) or "chart.pdf"
     path = CHART_DIR / name
+    # Separators become underscores, but "." and ".." survive that and would
+    # name the cache directory rather than a chart inside it.
+    if path.resolve().parent != CHART_DIR.resolve():
+        raise Refused("%s does not name a chart file" % url)
     if path.exists() and path.stat().st_size > 0 and not refresh:
         return path
     CHART_DIR.mkdir(parents=True, exist_ok=True)
@@ -5996,7 +6015,7 @@ def _nas_parse(xml):
     """The older XML feed, kept as the fallback. It reports the same programs
     without their scope, so the lines it produces name no facilities and say
     only what this feed actually knows."""
-    root = ET.fromstring(xml)
+    root = _parse_xml(xml, "NAS status")
     out = {}
 
     def add(code, entry):

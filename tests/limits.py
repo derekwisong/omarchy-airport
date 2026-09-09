@@ -191,6 +191,34 @@ check("airport floor clears the measured 86,032",
 check("runway floor clears the measured 48,224",
       apt.MIN_OA_RUNWAYS < 48224, True)
 
+# XML from a data source. expat caps entity expansion, but the cap is a ratio,
+# so at a 64 MB ceiling it would still allow gigabytes. None of these feeds
+# carries a DOCTYPE, so the parser refuses one outright.
+apt._load_build_modules()
+refuses("an entity bomb",
+        lambda: apt._parse_xml('<!DOCTYPE l [<!ENTITY a "aa"><!ENTITY b "&a;&a;">]>'
+                               '<l>&b;</l>', "test"), apt.Refused)
+refuses("an external entity",
+        lambda: apt._parse_xml('<!DOCTYPE d [<!ENTITY x SYSTEM "file:///etc/passwd">]>'
+                               '<d>&x;</d>', "test"), apt.Refused)
+refuses("a bare doctype",
+        lambda: apt._parse_xml("<!DOCTYPE l><l>x</l>", "test"), apt.Refused)
+check("xml shaped like the real feed parses",
+      apt._parse_xml('<digital_tpp cycle="2609"><state_code ID="GA"/></digital_tpp>',
+                     "test").tag, "digital_tpp")
+
+# A chart filename comes from a URL path. Separators become underscores, but
+# "." and ".." survive that and would name the cache directory itself.
+refuses("a chart url naming the parent",
+        lambda: apt.local_chart("https://aeronav.faa.gov/.."), apt.Refused)
+refuses("a chart url naming the directory",
+        lambda: apt.local_chart("https://aeronav.faa.gov/."), apt.Refused)
+refuses("a chart url off the FAA hosts",
+        lambda: apt.local_chart("https://evil.test/x.pdf"), apt.Refused)
+check("a real chart path stays inside the cache",
+      (apt.CHART_DIR / "d-tpp_2609_00026AD.PDF").resolve().parent,
+      apt.CHART_DIR.resolve())
+
 if fail:
     sys.exit(1)
 print("download limits ok")

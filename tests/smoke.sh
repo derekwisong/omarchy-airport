@@ -378,7 +378,10 @@ fi
 
 # Live hazard and daylight context on the panel payload.
 check "tfr in payload"      '"tfr"'            $APT panel KPOU --no-record
-check "observation is timed and aged" "min ago"  $APT wx KATL
+# "ago)" not "min ago": an observation older than an hour reads "1h 02m ago",
+# so the tighter string failed for whichever part of the hour came after the
+# next METAR was due.
+check "observation is timed and aged" "ago)"     $APT wx KATL
 check "magnetic runway alignment" "°M ("      $APT runways KPOU
 check "twilight in weather" "twilight"         $APT panel KPOU --no-record
 
