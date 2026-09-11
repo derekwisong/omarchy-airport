@@ -1,7 +1,9 @@
 # Airport — an Omarchy shell plugin
 
-Look up any of 19,411 US airports, and the rest of the world besides. One summoned panel:
-type an identifier, a city or a state.
+Look up information about Airports.
+
+*Currently, detailed information is only available for Airports in
+the United States of America.*
 
 ![The Summary page](docs/summary.png)
 
@@ -9,27 +11,51 @@ type an identifier, a city or a state.
 
 ```bash
 omarchy plugin add https://github.com/derekwisong/omarchy-airport.git --enable
+```
+
+## Add a launcher
+
+**A panel has no keybinding and no menu entry of its own.** Installing and enabling the plugin
+puts nothing on your screen. Until you add one of the two below, the only way in is to type:
+
+```bash
 omarchy-shell shell toggle derekwisong.airport
 ```
 
-Needs Python 3 — standard library only, nothing to `pip install`, nothing to install as root.
 
-Approach plates and diagrams are shown inside the panel, which a stock Omarchy install already
-has what it needs for. On a system missing Qt's PDF module they open in your browser instead,
-and nothing else changes.
+### Menu entry, no keybinding
 
-### Reaching it
+Open your menu extensions file:
 
-`SUPER + SPACE` then "airport", once you copy the entry from
-[`menu-extension.jsonc`](menu-extension.jsonc) into
-`~/.config/omarchy/extensions/omarchy-menu.jsonc` (hot-reloads on save). Or bind a key:
-
-```lua
--- ~/.config/hypr/bindings.lua
-o.bind("SUPER + <key>", "Airport", "omarchy-shell shell toggle derekwisong.airport")
+```bash
+$EDITOR ~/.config/omarchy/extensions/omarchy-menu.jsonc
 ```
 
-The plugin writes nothing to your config.
+Paste this block inside the outermost `{ }`, next to whatever is already there:
+
+```jsonc
+"trigger.airport": {
+  "icon": "󰀝",
+  "label": "Airport",
+  "aliases": ["airport", "airports", "metar", "wx"],
+  "description": "Look up any airport - runways, frequencies, weather, procedures",
+  "action": "omarchy-shell shell toggle derekwisong.airport"
+},
+```
+
+Save. The menu hot-reloads. Press `SUPER + SPACE`, type `airport`, press Enter. The same block
+lives in [`menu-extension.jsonc`](menu-extension.jsonc) if you would rather copy it from a file.
+
+### Keybinding
+
+Add one line to `~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("SUPER + A", "Airport", "omarchy-shell shell toggle derekwisong.airport")
+```
+
+Save; Hyprland reloads itself. `SUPER + A` is free on a stock Omarchy — `omarchy menu
+keybindings --print` shows what yours has already spent.
 
 ### Removing it
 
@@ -38,6 +64,8 @@ omarchy plugin remove derekwisong.airport
 rm -rf ~/.cache/airport-info ~/.local/share/airport-info ~/.local/state/airport-info
 ```
 
+Then delete whichever launcher you added.
+
 ## The panel
 
 Left rail is recents, pinned first. The header — identifier, name, location, local time,
@@ -45,20 +73,18 @@ conditions and the links out — stays put on every page.
 
 | Page | What's there |
 |---|---|
-| **Summary** | Runway, tower and hours, airspace, fuel, attended hours, landing fee, sectional and centre, a forecast band, and Advisories — FAA delay programs and flight restrictions within 50 nm |
-| **Weather** | Category, present weather in words, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, how old the observation is, a forecast timeline, raw METAR and TAF |
-| **Traffic** | What ADS-B hears nearby right now — arriving, departing, on the ground, passing over — as a plan-view scope centred on the field, or as a table, at 5, 10, 25, 50 or 100 nm, over the NWS reflectivity mosaic |
-| **Amenities** | Food, shops and lounges by concourse, filterable, with the gate each is at and whether it is step-free or has wi-fi, each linking to Google Maps |
-| **Ground** | How you leave: rail with the lines that call and where they run, the airport's own people mover stop by stop, buses, taxi ranks, car rental, ferries and bike share — each with the walk from the terminal |
-| **Runways** | Which runway the wind favours, then every runway per end: head and crosswind components, lengths, surface, lighting, magnetic and true alignment, ILS, VGSI, displaced thresholds, LDA, obstructions, pattern altitude |
+| **Summary** | Runway, tower, hours, airspace, fuel, landing fee, sectional and centre, a forecast band, FAA delay programs and restrictions within 50 nm |
+| **Weather** | Category, conditions in words, wind, visibility, sky, ceiling, temperature, dew point, altimeter, pressure and density altitude, twilight, a forecast timeline, raw METAR and TAF |
+| **Traffic** | What ADS-B hears nearby — arriving, departing, on the ground, passing over — as a plan-view scope or a table, at 5 to 100 nm, over the NWS reflectivity mosaic |
+| **Amenities** | Food, shops and lounges by concourse, filterable, with gate, step-free access and wi-fi, each linking to Google Maps |
+| **Ground** | How you leave: rail, the airport's own people mover, buses, taxi ranks, car rental, ferries, bike share — each with the walk from the terminal |
+| **Runways** | Which runway the wind favours, then per end: head and crosswind components, length, surface, lighting, alignment, ILS, VGSI, displaced thresholds, obstructions |
 | **Procedures** | Approaches by runway, SIDs, STARs, ODPs, minimums, hot spots |
 | **Frequencies** | The ones you'd tune, with tower hours; approach and departure filed separately |
-| **Services** | The airport's own website, attended hours, parking, customs, repairs, oxygen, beacon, wind indicator, manager, owner, FBOs with fuel prices |
-| **Notes** | Your markdown, edited in your editor, live on save |
+| **Services** | Website, attended hours, parking, customs, repairs, oxygen, manager, owner, FBOs with fuel prices |
+| **Notes** | Your markdown  notes |
 
-`i` inverts a chart for night use.
-
-![The forecast timeline](docs/weather.png)
+![Traffic near the field](docs/traffic.png)
 
 ## Keyboard
 
@@ -75,6 +101,7 @@ conditions and the links out — stays put on every page.
 | `[` `]` | On Traffic, step the range |
 | `Ctrl+W` | On Traffic, weather radar under the scope |
 | `Ctrl+O` | Open the airport's own website |
+| `i` | Invert a chart, for night use |
 | `Esc` | Back out of a chart, then close |
 
 ## The cache
@@ -82,16 +109,9 @@ conditions and the links out — stays put on every page.
 Every FAA source is a bulk publication — there is no per-airport endpoint — so the plugin
 downloads one 28-day cycle and indexes it. **About 9 seconds and 54 MB**, built the first time
 you open the panel and again when the cycle rolls over. Worldwide runway data is fetched only
-if you look up a non-US field.
-
-```bash
-apt=~/.config/omarchy/plugins/derekwisong.airport/scripts/apt.py
-python3 $apt cache status
-python3 $apt cache update
-```
-
-An airport draws in two passes: everything local in about 75 ms, then conditions and delays
-when the network answers. The panel says which it is waiting on rather than going blank.
+if you look up a non-US field. An airport then draws in two passes: everything local in about
+75 ms, then conditions and delays when the network answers, the panel saying which it is
+waiting on rather than going blank.
 
 ## The engine
 
@@ -99,111 +119,35 @@ when the network answers. The panel says which it is waiting on rather than goin
 `--json` on any subcommand.
 
 ```bash
-python3 $apt info KPOU              python3 $apt outlook KORD
-python3 $apt runways KPOU --svg     python3 $apt status DCA
-python3 $apt procedures KATL        python3 $apt wx KPOU
-python3 $apt amenities ATL          python3 $apt fbo KPOU
-python3 $apt ground KATL
-python3 $apt traffic KATL           python3 $apt traffic KPOU --radius 40
-python3 $apt radar KATL --range 25
+apt=~/.config/omarchy/plugins/derekwisong.airport/scripts/apt.py
+
+python3 $apt cache status               python3 $apt cache update
+python3 $apt info KPOU                  python3 $apt wx KPOU
+python3 $apt runways KPOU --svg         python3 $apt outlook KORD
+python3 $apt procedures KATL            python3 $apt status DCA
+python3 $apt amenities ATL              python3 $apt fbo KPOU
+python3 $apt ground KATL                python3 $apt radar KATL --range 25
+python3 $apt traffic KPOU --radius 40   python3 $apt tfr KEWR --radius 50
 python3 $apt nearby KPOU --radius 50 --fuel
-python3 $apt tfr KEWR --radius 50
 python3 $apt notes ATL add "Sky Club F is the good one"
 ```
 
 Notes are markdown in `~/.local/share/airport-info/notes/<IDENT>.md`. Recents live in
 `~/.local/state/airport-info/`.
 
-## What it will not tell you
-
-- **No NOTAMs.** No key-free source exists, so it does not have them and does not link to a
-  search that would imply it had checked.
-- **The ways out are only what OpenStreetMap has mapped.** Rail, an airport's own people
-  mover and car rental are mapped well at large fields; taxi ranks patchily; small fields
-  have nothing at all. An empty Ground page means the map is empty, not the airport.
-- **No ratings.** OpenStreetMap has no rating field. Names link to Google Maps, where they are.
-- **TFRs are located, but against the field, not your route.** Every active TFR is placed and
-  the ones within 50 nm are listed nearest first, each linked to its FAA page. A restriction
-  60 nm away on your track is real and is not on this list.
-- **The standing national notices carry no geometry.** Stadium rules, the DC restrictions and
-  the blanket security items are not in one place, so they are counted rather than measured.
-- **A ground stop is not a closed airport.** It holds flights bound for the field, at the field
-  they are leaving from, usually only those filed out of a few named centres. The line says
-  which centres and says the runways are open, because the label alone read as a closure.
-- **The radar is minutes old, and only over the lower 48.** The mosaic is base
-  reflectivity at about a kilometre per pixel, a few minutes behind the sky, and the
-  line under the scope says which scan it is. Outside the CONUS mosaic the layer is not
-  offered at all rather than drawn empty, because an empty scope reads as clear weather.
-- **Traffic is what was heard, not what is flying.** ADS-B comes from volunteer
-  receivers: an aircraft without ADS-B out, or below the horizon of every nearby receiver,
-  is simply absent. Coverage is excellent over cities and thin over small fields, so the
-  count always says *seen*, and an empty list never means an empty sky.
-- **Arriving and departing are read off the data, not filed.** ADS-B carries no origin or
-  destination, so "arriving" means low and descending near this field. A jet passing over
-  at 24,000 ft on its way down to somewhere else is listed as passing over.
-- **The local clock is not from the FAA.** No FAA product publishes a timezone in
-  structured form — not the eight NASR airport files, not the Chart Supplement index.
-  So the zone is looked up once per airport from a third party and cached; the offset is
-  then recomputed locally, so it stays right when the clocks change. An airport whose zone
-  could not be established shows no time rather than a guessed one.
-- **Outside FAA coverage it says so** rather than reporting no tower or no fuel.
-- **Delays are what the FAA reports**, not a prediction. A forecast is a forecast.
+![The forecast timeline](docs/weather.png)
 
 ## Not for navigation
 
-Built on a 28-day snapshot. Every pilot-facing output names its cycle. Verify against current
-FAA publications and get an official preflight briefing before any flight.
+**Get an official briefing before any flight.**
 
-## Development
+## Also here
 
-Symlink the repo in and the shell loads from your working tree:
-
-```bash
-ln -s "$PWD" ~/.config/omarchy/plugins/derekwisong.airport
-omarchy-shell shell rescanPlugins
-omarchy restart shell      # required to pick up QML changes
-```
-
-`omarchy plugin remove` unlinks rather than deleting the target. To test what a user gets,
-remove it and `omarchy plugin add .` instead.
-
-```bash
-./tests/smoke.sh              # ~120 checks, network required
-./tests/smoke.sh --with-osm   # adds Overpass and AirNav
-python3 tests/limits.py       # download ceilings, hosts, redirects, zip bounds
-omarchy plugin validate .
-```
-
-The rest of `tests/` runs offline and takes no arguments — `wx.py`, `geometry.py`,
-`traffic.py`, `transport.py`, `overpass.py`, and `escaping.js`, `scope.js`, `wind.js`
-under `node`.
-
-NASR rows are stored as positional arrays over the allowlists at the top of `apt.py`; a column
-not on its list reads back as absent, so add it there and rebuild. Never name a QML property
-`data` — `Item.data` is the default children list and shadows it silently.
+- [Data sources](docs/data-sources.md) — every feed the plugin reads, and its terms. All public
+  and unauthenticated: no account, no API key.
+- [Development](docs/development.md) — running from a working tree, and the test suite.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). That covers the code, not the data below.
+MIT — see [LICENSE](LICENSE). That covers the code, not the data it reads.
 
-## Data sources
-
-All public and unauthenticated. No account, no API key.
-
-| Source | Provides | Terms |
-|---|---|---|
-| [FAA NASR](https://nfdc.faa.gov/) | Airports, runways, frequencies, airspace, attendance, contacts, remarks | Public domain |
-| [FAA d-TPP](https://aeronav.faa.gov/) | Approaches, SIDs, STARs, ODPs, minimums, diagrams | Public domain |
-| [FAA Chart Supplement](https://aeronav.faa.gov/) | Per-airport supplement pages | Public domain |
-| [aviationweather.gov](https://aviationweather.gov/) | METAR, TAF, flight category | NOAA, public domain |
-| [FAA NAS Status](https://nasstatus.faa.gov/) | Ground delays and stops with the centres they include, closures, advisory links | Public domain |
-| [FAA TFR](https://tfr.faa.gov/) | Active restrictions, with per-NOTAM geometry for distance | Public domain |
-| [OurAirports](https://ourairports.com/) | Worldwide airports and runways, IATA codes, search ranking | Public domain |
-| [OpenStreetMap](https://www.openstreetmap.org/) via [Overpass](https://overpass-api.de/) | Terminal food, shops, lounges and their concourses | © OpenStreetMap contributors, **ODbL** |
-| [adsb.lol](https://adsb.lol/) | Live ADS-B traffic near an airport | © adsb.lol contributors, **ODbL** |
-| [Iowa Environmental Mesonet](https://mesonet.agron.iastate.edu/), [NOAA/NWS](https://mapservices.weather.noaa.gov/) | NEXRAD base reflectivity mosaic under the scope | NWS data, public domain |
-| [timeapi.io](https://timeapi.io/) | The IANA timezone for an airport, fetched once and cached | Free public API |
-| [AirNav](https://www.airnav.com/) | FBO names and fuel prices | © AirNav, LLC — one airport on demand, cached 24h |
-| [sunrise-sunset.org](https://sunrise-sunset.org/) | Civil twilight, sunrise, sunset | Free public API |
-
-OpenStreetMap attribution appears in the CLI output and on every generated page, not only here.
